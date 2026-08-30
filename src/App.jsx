@@ -2386,7 +2386,7 @@ export default function App() {
       try { const v = await window.storage.get("data:targets", false); if (v?.value) setTargets(JSON.parse(v.value)); } catch (e) {}
       try { const v = await window.storage.get("data:nationality", false); if (v?.value) setNationality(JSON.parse(v.value)); } catch (e) {}
       try { const v = await window.storage.get("data:vatrefund", false); if (v?.value) setVatRefundRows(JSON.parse(v.value)); } catch (e) {}
-      try { const v = await window.storage.get("data:tasks", false); if (v?.value) setTasks(JSON.parse(v.value)); } catch (e) {}
+      try { const v = await window.storage.get("data:tasks", true); if (v?.value) setTasks(JSON.parse(v.value)); } catch (e) {}
       try { const v = await window.storage.get("layout", false); if (v?.value) { const p = JSON.parse(v.value); if (p.order) setWidgetOrder(p.order); if (p.hidden) setHidden(p.hidden); if (p.scales) setScales(p.scales); } } catch (e) {}
       try { const v = await window.storage.get("favoriteWidgets", false); if (v?.value) setFavorites(JSON.parse(v.value)); } catch (e) {}
       try { const v = await window.storage.get("settings:webhookUrl", false); if (v?.value) setWebhookUrl(JSON.parse(v.value)); } catch (e) {}
@@ -2417,7 +2417,7 @@ export default function App() {
     setWebhookUrl(url);
     try { await window.storage.set("settings:webhookUrl", JSON.stringify(url), false); showToast("success", "บันทึกลิงก์ Webhook แล้ว"); } catch (e) { showToast("error", "บันทึกไม่สำเร็จ"); }
   }, [showToast]);
-  const persistTasks = useCallback(async (next) => { try { await window.storage.set("data:tasks", JSON.stringify(next), false); } catch (e) {} }, []);
+  const persistTasks = useCallback(async (next) => { try { await window.storage.set("data:tasks", JSON.stringify(next), true); } catch (e) {} }, []);
   const saveTask = useCallback((task) => {
     setTasks((prev) => {
       const idx = prev.findIndex((t) => t.id === task.id);
@@ -3159,6 +3159,51 @@ function ComingSoonPage() {
 }
 
 
+function CloudStorageSettingsCard() {
+  const [url, setUrl] = useState(() => (window.__getCloudStorageUrl ? window.__getCloudStorageUrl() : ""));
+  const [input, setInput] = useState(url);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+
+  const save = () => {
+    const clean = input.trim();
+    if (window.__setCloudStorageUrl) window.__setCloudStorageUrl(clean);
+    setUrl(clean);
+    setTestResult(null);
+  };
+
+  const test = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      await window.storage.set("cloud-storage-test", JSON.stringify({ pingAt: new Date().toISOString() }), true);
+      const v = await window.storage.get("cloud-storage-test", true);
+      setTestResult(v?.value ? "success" : "fail");
+    } catch (e) {
+      setTestResult("fail");
+    }
+    setTesting(false);
+  };
+
+  return (
+    <div className="mapping-card mapping-card-webhook">
+      <div className="panel-title"><Users2 size={13} /> เชื่อมต่อ Cloud Storage (ข้อมูลที่ใช้ร่วมกัน)</div>
+      <div className="mapping-cols">
+        ถ้าไม่ตั้งค่านี้ ข้อมูลที่ "แชร์" กัน (Tasks, Announcement, Training Tool, Competitor Analysis ฯลฯ) จะเก็บแยกตามเครื่อง/เบราว์เซอร์ของแต่ละคนเท่านั้น — คนอื่นจะไม่เห็นสิ่งที่คุณสร้าง วาง URL ของ Google Apps Script Web App (ดูวิธีตั้งค่าสคริปต์ในแชท) เพื่อให้ข้อมูลเหล่านี้ซิงก์ข้ามเครื่อง/ข้ามคนได้จริง
+      </div>
+      <label className="field-label">Cloud Storage Web App URL</label>
+      <input type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder="https://script.google.com/macros/s/xxxxx/exec" />
+      <div style={{ display: "flex", gap: ".5rem", marginTop: ".6rem" }}>
+        <button className="btn btn-primary" onClick={save}><Save size={14} /> บันทึก</button>
+        <button className="btn btn-outline" onClick={test} disabled={!url || testing}>{testing ? "กำลังทดสอบ..." : "ทดสอบการเชื่อมต่อ"}</button>
+      </div>
+      {url && <div className="mapping-status">✅ ตั้งค่าไว้แล้ว — ข้อมูลที่แชร์จะพยายามซิงก์ไปที่ Cloud Storage นี้</div>}
+      {testResult === "success" && <div className="mapping-status" style={{ color: "#12946B" }}>✅ เชื่อมต่อสำเร็จ — อ่าน/เขียนข้อมูลผ่าน Cloud Storage ได้แล้ว</div>}
+      {testResult === "fail" && <div className="mapping-status" style={{ color: "#D4283F" }}>❌ เชื่อมต่อไม่สำเร็จ — เช็ค URL หรือดูขั้นตอน Deploy สคริปต์อีกครั้ง</div>}
+    </div>
+  );
+}
+
 function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLastYearRef, fileTenderRef, fileTargetRef, fileNationalityRef, fileVatRefundRef, handleSalesUpload, handleTenderUpload, handleTargetUpload, handleNationalityUpload, handleVatRefundUpload, data, tenderCurrent, targets, nationality, vatRefundRows, webhookUrl, saveWebhookUrl, tasks, saveTask, deleteTask, stores }) {
   const [urlInput, setUrlInput] = useState(webhookUrl || "");
   useEffect(() => { setUrlInput(webhookUrl || ""); }, [webhookUrl]);
@@ -3186,6 +3231,8 @@ function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLas
           </button>
           {webhookUrl && <div className="mapping-status">✅ เชื่อมต่อแล้ว — รายงานที่ส่งจะถูกบันทึกไปที่ Google Drive ด้วย</div>}
         </div>
+
+        <CloudStorageSettingsCard />
 
         <div className="mapping-card mapping-card-soon">
           <div className="panel-title"><Users2 size={13} /> บัญชีผู้ใช้งาน (User Accounts)</div>
