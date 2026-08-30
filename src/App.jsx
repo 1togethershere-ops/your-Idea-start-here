@@ -474,7 +474,7 @@ function ReflectionBar({ ctx }) {
     (async () => {
       setSaved(false);
       try {
-        const v = await window.storage.get(key, false);
+        const v = await window.storage.get(key, true);
         if (v?.value) { const parsed = JSON.parse(v.value); setFail(parsed.fail || ""); setWin(parsed.win || ""); setSaved(true); }
         else { setFail(""); setWin(""); }
       } catch (e) { setFail(""); setWin(""); }
@@ -482,7 +482,7 @@ function ReflectionBar({ ctx }) {
   }, [key]);
 
   const save = async () => {
-    try { await window.storage.set(key, JSON.stringify({ fail, win, savedAt: new Date().toISOString() }), false); setSaved(true); ctx.showToast("success", "บันทึกสรุปวันนี้แล้ว"); }
+    try { await window.storage.set(key, JSON.stringify({ fail, win, savedAt: new Date().toISOString() }), true); setSaved(true); ctx.showToast("success", "บันทึกสรุปวันนี้แล้ว"); }
     catch (e) { ctx.showToast("error", "บันทึกไม่สำเร็จ"); }
   };
 
@@ -596,11 +596,11 @@ function TextNoteWidget({ ctx, storagePrefix, placeholder, historyTitle }) {
 
   const load = useCallback(async () => {
     try {
-      const list = await window.storage.list(`${storagePrefix}:`, false);
+      const list = await window.storage.list(`${storagePrefix}:`, true);
       const keys = list?.keys || [];
       const out = [];
       for (const kk of keys) {
-        try { const v = await window.storage.get(kk, false); if (v?.value) out.push({ key: kk, ...JSON.parse(v.value) }); } catch (e) {}
+        try { const v = await window.storage.get(kk, true); if (v?.value) out.push({ key: kk, ...JSON.parse(v.value) }); } catch (e) {}
       }
       out.sort((a, b) => (b.savedAt || "").localeCompare(a.savedAt || ""));
       setItems(out);
@@ -613,7 +613,7 @@ function TextNoteWidget({ ctx, storagePrefix, placeholder, historyTitle }) {
     if (!text.trim()) return;
     setSaving(true);
     try {
-      await window.storage.set(noteKey, JSON.stringify({ store: ctx.store, from: ctx.from, to: ctx.to, text: text.trim(), savedAt: new Date().toISOString() }), false);
+      await window.storage.set(noteKey, JSON.stringify({ store: ctx.store, from: ctx.from, to: ctx.to, text: text.trim(), savedAt: new Date().toISOString() }), true);
       setText(""); ctx.showToast("success", "บันทึกแล้ว"); load();
     } catch (e) { ctx.showToast("error", "บันทึกไม่สำเร็จ"); }
     setSaving(false);
@@ -1165,7 +1165,7 @@ function FootfallWidget({ ctx }) {
   useEffect(() => { setVal(ctx.footfall || ""); }, [ctx.footfall]);
   const save = async () => {
     const n = Number(val) || 0;
-    try { await window.storage.set(key, JSON.stringify(n), false); ctx.setFootfall(n); ctx.showToast("success", "บันทึก Footfall แล้ว"); }
+    try { await window.storage.set(key, JSON.stringify(n), true); ctx.setFootfall(n); ctx.showToast("success", "บันทึก Footfall แล้ว"); }
     catch (e) { ctx.showToast("error", "บันทึกไม่สำเร็จ"); }
   };
   return (
@@ -1184,11 +1184,11 @@ function PhotoWidget({ ctx, widgetId }) {
   const inputRef = useRef(null);
 
   const load = useCallback(async () => {
-    try { const v = await window.storage.get(key, false); setPhotos(v?.value ? JSON.parse(v.value) : []); } catch (e) { setPhotos([]); }
+    try { const v = await window.storage.get(key, true); setPhotos(v?.value ? JSON.parse(v.value) : []); } catch (e) { setPhotos([]); }
   }, [key]);
   useEffect(() => { load(); }, [load]);
 
-  const persist = async (list) => { try { await window.storage.set(key, JSON.stringify(list), false); } catch (e) { ctx.showToast("error", "บันทึกรูปไม่สำเร็จ (อาจมีขนาดใหญ่เกินไป)"); } };
+  const persist = async (list) => { try { await window.storage.set(key, JSON.stringify(list), true); } catch (e) { ctx.showToast("error", "บันทึกรูปไม่สำเร็จ (อาจมีขนาดใหญ่เกินไป)"); } };
 
   const handleFiles = (files) => {
     const list = Array.from(files || []).slice(0, 6 - photos.length);
@@ -1251,7 +1251,7 @@ function PerfectBillWidget({ ctx, category, widgetId }) {
     (async () => {
       setSaved(false);
       try {
-        const v = await window.storage.get(key, false);
+        const v = await window.storage.get(key, true);
         if (v?.value) {
           const p = JSON.parse(v.value);
           setConPct(p.conPct ?? ""); setPerfectAtv(p.perfectAtv ?? ""); setManpower(p.manpower ?? "");
@@ -1279,7 +1279,7 @@ function PerfectBillWidget({ ctx, category, widgetId }) {
 
   const save = async () => {
     try {
-      await window.storage.set(key, JSON.stringify({ conPct, perfectAtv, manpower, savedAt: new Date().toISOString() }), false);
+      await window.storage.set(key, JSON.stringify({ conPct, perfectAtv, manpower, savedAt: new Date().toISOString() }), true);
       setSaved(true); ctx.showToast("success", "บันทึกแล้ว");
     } catch (e) { ctx.showToast("error", "บันทึกไม่สำเร็จ"); }
   };
@@ -1342,11 +1342,11 @@ function StoreVisitWidget({ ctx, widgetId }) {
 
   const load = useCallback(async () => {
     try {
-      const list = await window.storage.list(`${prefix}:`, false);
+      const list = await window.storage.list(`${prefix}:`, true);
       const keys = list?.keys || [];
       const out = [];
       for (const kk of keys) {
-        try { const v = await window.storage.get(kk, false); if (v?.value) out.push({ key: kk, ...JSON.parse(v.value) }); } catch (e) {}
+        try { const v = await window.storage.get(kk, true); if (v?.value) out.push({ key: kk, ...JSON.parse(v.value) }); } catch (e) {}
       }
       out.sort((a, b) => (b.savedAt || "").localeCompare(a.savedAt || ""));
       setItems(out);
@@ -1357,7 +1357,7 @@ function StoreVisitWidget({ ctx, widgetId }) {
   useEffect(() => {
     (async () => {
       try {
-        const v = await window.storage.get(key, false);
+        const v = await window.storage.get(key, true);
         if (v?.value) { const p = JSON.parse(v.value); setChallenge(p.challenge || ""); setDetails(p.details || ""); setActionPlan(p.actionPlan || ""); }
         else { setChallenge(""); setDetails(""); setActionPlan(""); }
       } catch (e) { setChallenge(""); setDetails(""); setActionPlan(""); }
@@ -1367,7 +1367,7 @@ function StoreVisitWidget({ ctx, widgetId }) {
   const save = async () => {
     setSaving(true);
     try {
-      await window.storage.set(key, JSON.stringify({ store: ctx.store, from: svFrom, to: svTo, challenge, details, actionPlan, savedAt: new Date().toISOString() }), false);
+      await window.storage.set(key, JSON.stringify({ store: ctx.store, from: svFrom, to: svTo, challenge, details, actionPlan, savedAt: new Date().toISOString() }), true);
       ctx.showToast("success", "บันทึก Store Visit แล้ว"); load();
     } catch (e) { ctx.showToast("error", "บันทึกไม่สำเร็จ"); }
     setSaving(false);
@@ -1431,11 +1431,11 @@ function MallEventWidget({ ctx, widgetId }) {
 
   const load = useCallback(async () => {
     try {
-      const list = await window.storage.list(`${prefix}:`, false);
+      const list = await window.storage.list(`${prefix}:`, true);
       const keys = list?.keys || [];
       const out = [];
       for (const kk of keys) {
-        try { const v = await window.storage.get(kk, false); if (v?.value) out.push({ key: kk, ...JSON.parse(v.value) }); } catch (e) {}
+        try { const v = await window.storage.get(kk, true); if (v?.value) out.push({ key: kk, ...JSON.parse(v.value) }); } catch (e) {}
       }
       out.sort((a, b) => (b.savedAt || "").localeCompare(a.savedAt || ""));
       setItems(out);
@@ -1446,7 +1446,7 @@ function MallEventWidget({ ctx, widgetId }) {
   useEffect(() => {
     (async () => {
       try {
-        const v = await window.storage.get(key, false);
+        const v = await window.storage.get(key, true);
         if (v?.value) { const p = JSON.parse(v.value); setEventName(p.eventName || ""); setDetails(p.details || ""); setImpacted(!!p.impacted); }
         else { setEventName(""); setDetails(""); setImpacted(false); }
       } catch (e) { setEventName(""); setDetails(""); setImpacted(false); }
@@ -1456,7 +1456,7 @@ function MallEventWidget({ ctx, widgetId }) {
   const save = async () => {
     setSaving(true);
     try {
-      await window.storage.set(key, JSON.stringify({ store: ctx.store, from: evFrom, to: evTo, eventName, details, impacted, savedAt: new Date().toISOString() }), false);
+      await window.storage.set(key, JSON.stringify({ store: ctx.store, from: evFrom, to: evTo, eventName, details, impacted, savedAt: new Date().toISOString() }), true);
       ctx.showToast("success", "บันทึก Mall Event แล้ว"); load();
     } catch (e) { ctx.showToast("error", "บันทึกไม่สำเร็จ"); }
     setSaving(false);
@@ -1595,7 +1595,7 @@ function HourlyReportWidget({ ctx, widgetId }) {
     (async () => {
       setSaved(false);
       try {
-        const v = await window.storage.get(key, false);
+        const v = await window.storage.get(key, true);
         if (v?.value) {
           const p = JSON.parse(v.value);
           setBreakdowns(p.breakdowns && p.breakdowns.length === HOURLY_SLOTS.length ? p.breakdowns : HOURLY_SLOTS.map(() => "10"));
@@ -1636,7 +1636,7 @@ function HourlyReportWidget({ ctx, widgetId }) {
   const save = async () => {
     setSaving(true);
     try {
-      await window.storage.set(key, JSON.stringify({ store, date, breakdowns, hourlySales, shiftE, shiftM, shiftL, remark, savedAt: new Date().toISOString() }), false);
+      await window.storage.set(key, JSON.stringify({ store, date, breakdowns, hourlySales, shiftE, shiftM, shiftL, remark, savedAt: new Date().toISOString() }), true);
       setSaved(true); ctx.showToast("success", "บันทึก Hourly Report แล้ว");
     } catch (e) { ctx.showToast("error", "บันทึกไม่สำเร็จ"); }
     setSaving(false);
@@ -1761,11 +1761,11 @@ function CompetitorAnalysisWidget({ ctx, widgetId }) {
 
   const load = useCallback(async () => {
     try {
-      const list = await window.storage.list(`${prefix}:`, false);
+      const list = await window.storage.list(`${prefix}:`, true);
       const keys = list?.keys || [];
       const out = [];
       for (const kk of keys) {
-        try { const v = await window.storage.get(kk, false); if (v?.value) out.push({ key: kk, ...JSON.parse(v.value) }); } catch (e) {}
+        try { const v = await window.storage.get(kk, true); if (v?.value) out.push({ key: kk, ...JSON.parse(v.value) }); } catch (e) {}
       }
       out.sort((a, b) => (b.savedAt || "").localeCompare(a.savedAt || ""));
       setEntries(out);
@@ -1806,7 +1806,7 @@ function CompetitorAnalysisWidget({ ctx, widgetId }) {
       await window.storage.set(id, JSON.stringify({
         store, weekOf, brand: brand.trim(), callout, promotion, period, details, markdown, impactKpi, photos,
         savedAt: new Date().toISOString(),
-      }), false);
+      }), true);
       ctx.showToast("success", `บันทึก Competitor Analysis: ${brand} แล้ว`);
       resetForm();
       load();
@@ -2380,12 +2380,12 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      try { const v = await window.storage.get("data:current", false); if (v?.value) setData(JSON.parse(v.value)); } catch (e) {}
-      try { const v = await window.storage.get("data:lastyear", false); if (v?.value) { const p = JSON.parse(v.value); setLyData(p.data || lyData); setDemoMode(!!p.demo); } } catch (e) {}
-      try { const v = await window.storage.get("data:tender", false); if (v?.value) { const p = JSON.parse(v.value); setTenderCurrent(p.current || []); setTenderLastYear(p.lastYear || []); } } catch (e) {}
-      try { const v = await window.storage.get("data:targets", false); if (v?.value) setTargets(JSON.parse(v.value)); } catch (e) {}
-      try { const v = await window.storage.get("data:nationality", false); if (v?.value) setNationality(JSON.parse(v.value)); } catch (e) {}
-      try { const v = await window.storage.get("data:vatrefund", false); if (v?.value) setVatRefundRows(JSON.parse(v.value)); } catch (e) {}
+      try { const v = await window.storage.get("data:current", true); if (v?.value) setData(JSON.parse(v.value)); } catch (e) {}
+      try { const v = await window.storage.get("data:lastyear", true); if (v?.value) { const p = JSON.parse(v.value); setLyData(p.data || lyData); setDemoMode(!!p.demo); } } catch (e) {}
+      try { const v = await window.storage.get("data:tender", true); if (v?.value) { const p = JSON.parse(v.value); setTenderCurrent(p.current || []); setTenderLastYear(p.lastYear || []); } } catch (e) {}
+      try { const v = await window.storage.get("data:targets", true); if (v?.value) setTargets(JSON.parse(v.value)); } catch (e) {}
+      try { const v = await window.storage.get("data:nationality", true); if (v?.value) setNationality(JSON.parse(v.value)); } catch (e) {}
+      try { const v = await window.storage.get("data:vatrefund", true); if (v?.value) setVatRefundRows(JSON.parse(v.value)); } catch (e) {}
       try { const v = await window.storage.get("data:tasks", true); if (v?.value) setTasks(JSON.parse(v.value)); } catch (e) {}
       try { const v = await window.storage.get("layout", false); if (v?.value) { const p = JSON.parse(v.value); if (p.order) setWidgetOrder(p.order); if (p.hidden) setHidden(p.hidden); if (p.scales) setScales(p.scales); } } catch (e) {}
       try { const v = await window.storage.get("favoriteWidgets", false); if (v?.value) setFavorites(JSON.parse(v.value)); } catch (e) {}
@@ -2399,20 +2399,20 @@ export default function App() {
   const availableDates = useMemo(() => { const d = data.kpi.map((r) => r.date).sort(); return { min: d[0] || "2026-08-01", max: d[d.length - 1] || "2026-08-10" }; }, [data.kpi]);
 
   useEffect(() => {
-    (async () => { try { const v = await window.storage.get(`footfall:${store}:${from}:${to}`, false); setFootfallState(v?.value ? JSON.parse(v.value) : 0); } catch (e) { setFootfallState(0); } })();
+    (async () => { try { const v = await window.storage.get(`footfall:${store}:${from}:${to}`, true); setFootfallState(v?.value ? JSON.parse(v.value) : 0); } catch (e) { setFootfallState(0); } })();
   }, [store, from, to]);
 
   const submissionKey = `submission:${store}:${from}:${to}`;
   useEffect(() => {
-    (async () => { try { const v = await window.storage.get(submissionKey, false); setSubmission(v?.value ? JSON.parse(v.value) : null); } catch (e) { setSubmission(null); } })();
+    (async () => { try { const v = await window.storage.get(submissionKey, true); setSubmission(v?.value ? JSON.parse(v.value) : null); } catch (e) { setSubmission(null); } })();
   }, [submissionKey]);
 
-  const persistData = useCallback(async (d) => { try { await window.storage.set("data:current", JSON.stringify(d), false); } catch (e) {} }, []);
-  const persistLy = useCallback(async (d, demo) => { try { await window.storage.set("data:lastyear", JSON.stringify({ data: d, demo }), false); } catch (e) {} }, []);
-  const persistTender = useCallback(async (cur, ly) => { try { await window.storage.set("data:tender", JSON.stringify({ current: cur, lastYear: ly }), false); } catch (e) {} }, []);
-  const persistTargets = useCallback(async (t) => { try { await window.storage.set("data:targets", JSON.stringify(t), false); } catch (e) {} }, []);
-  const persistNationality = useCallback(async (n) => { try { await window.storage.set("data:nationality", JSON.stringify(n), false); } catch (e) {} }, []);
-  const persistVatRefund = useCallback(async (rows) => { try { await window.storage.set("data:vatrefund", JSON.stringify(rows), false); } catch (e) {} }, []);
+  const persistData = useCallback(async (d) => { try { await window.storage.set("data:current", JSON.stringify(d), true); } catch (e) {} }, []);
+  const persistLy = useCallback(async (d, demo) => { try { await window.storage.set("data:lastyear", JSON.stringify({ data: d, demo }), true); } catch (e) {} }, []);
+  const persistTender = useCallback(async (cur, ly) => { try { await window.storage.set("data:tender", JSON.stringify({ current: cur, lastYear: ly }), true); } catch (e) {} }, []);
+  const persistTargets = useCallback(async (t) => { try { await window.storage.set("data:targets", JSON.stringify(t), true); } catch (e) {} }, []);
+  const persistNationality = useCallback(async (n) => { try { await window.storage.set("data:nationality", JSON.stringify(n), true); } catch (e) {} }, []);
+  const persistVatRefund = useCallback(async (rows) => { try { await window.storage.set("data:vatrefund", JSON.stringify(rows), true); } catch (e) {} }, []);
   const saveWebhookUrl = useCallback(async (url) => {
     setWebhookUrl(url);
     try { await window.storage.set("settings:webhookUrl", JSON.stringify(url), false); showToast("success", "บันทึกลิงก์ Webhook แล้ว"); } catch (e) { showToast("error", "บันทึกไม่สำเร็จ"); }
@@ -2621,7 +2621,7 @@ export default function App() {
         qty: curTotals.qty, receipts: curTotals.receipts,
         widgetOrder: visibleWidgets,
       };
-      await window.storage.set(submissionKey, JSON.stringify(payload), false);
+      await window.storage.set(submissionKey, JSON.stringify(payload), true);
       setSubmission(payload);
       if (webhookUrl) {
         try {
