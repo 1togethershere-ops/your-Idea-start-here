@@ -20,8 +20,18 @@ function storageKey(key, shared) {
   return `${NS}:${shared ? "shared" : "personal"}:${key}`;
 }
 
+/* Default Cloud Storage backend — every device uses this automatically so
+   nobody has to manually paste the URL in on each new phone/computer. It can
+   still be overridden per-device from YOUR SOURCE if you ever need to point
+   at a different backend (e.g. testing a new Apps Script deployment). */
+const DEFAULT_CLOUD_URL = "https://script.google.com/macros/s/AKfycbw5xkummk6JOp69L3vkFC8j9O7YJTyT7YDXK_Yy_H_4m_D17BCrN9c5uplYYEndJYMt/exec";
+
 function getCloudUrl() {
-  try { return localStorage.getItem(CLOUD_URL_KEY) || ""; } catch (e) { return ""; }
+  try {
+    const stored = localStorage.getItem(CLOUD_URL_KEY);
+    if (stored) return stored;
+  } catch (e) { /* ignore */ }
+  return DEFAULT_CLOUD_URL;
 }
 
 /* JSONP GET — the only reliably CORS-free way to read a response back from a
