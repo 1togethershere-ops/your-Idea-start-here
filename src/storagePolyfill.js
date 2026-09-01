@@ -71,9 +71,37 @@ async function cloudList(prefix) {
   } catch (e) { return []; }
 }
 
+/* Fetches every key AND its value under a prefix in a single round trip —
+   used by list() so widgets that do "list keys, then get() each one" (nearly
+   all of them) only ever make one network call instead of N+1. */
+async function cloudGetMany(prefix) {
+  const url = getCloudUrl();
+  if (!url) return [];
+  try {
+    const data = await jsonpFetch(url, { action: "getMany", prefix });
+    return (data && data.ok && data.items) || [];
+  } catch (e) { return []; }
+}
+
+/* Short-lived cache populated by list()'s batch fetch, so the individual
+   get() calls that widgets make right after list() resolve instantly from
+   memory instead of hitting the network again for every single key. */
+const recentCache = new Map();
+const RECENT_CACHE_MS = 20000;
+function cacheGet(key) {
+  const hit = recentCache.get(key);
+  if (!hit) return undefined;
+  if (Date.now() - hit.ts > RECENT_CACHE_MS) { recentCache.delete(key); return undefined; }
+  return hit.value;
+}
+function cacheSet(key, value) {
+  recentCache.set(key, { value, ts: Date.now() });
+}
+
 function cloudSet(key, value) {
   const url = getCloudUrl();
   if (!url) return;
+  cacheSet(key, value);
   // fire-and-forget: Apps Script Web Apps don't reliably expose readable
   // cross-origin responses for POST, so we don't await/read the result here.
   fetch(url, {
@@ -87,6 +115,7 @@ function cloudSet(key, value) {
 function cloudDelete(key) {
   const url = getCloudUrl();
   if (!url) return;
+  recentCache.delete(key);
   fetch(url, {
     method: "POST",
     mode: "no-cors",
@@ -98,8 +127,14 @@ function cloudDelete(key) {
 window.storage = {
   async get(key, shared = false) {
     if (shared && getCloudUrl()) {
+      const cached = cacheGet(key);
+      if (cached !== undefined) {
+        localStorage.setItem(storageKey(key, shared), cached);
+        return { key, value: cached, shared };
+      }
       try {
         const value = await cloudGet(key);
+        cacheSet(key, value);
         localStorage.setItem(storageKey(key, shared), value); // cache locally too
         return { key, value, shared };
       } catch (e) {
@@ -126,8 +161,16 @@ window.storage = {
   async list(prefix = "", shared = false) {
     if (shared && getCloudUrl()) {
       try {
-        const cloudKeys = await cloudList(prefix);
-        if (cloudKeys.length) return { keys: cloudKeys, prefix, shared };
+        const items = await cloudGetMany(prefix);
+        if (items.length) {
+          const keys = [];
+          for (const it of items) {
+            cacheSet(it.key, it.value);
+            localStorage.setItem(storageKey(it.key, shared), it.value);
+            keys.push(it.key);
+          }
+          return { keys, prefix, shared };
+        }
       } catch (e) { /* fall through to local */ }
     }
     const fullPrefix = storageKey(prefix, shared);
