@@ -24,7 +24,7 @@ function storageKey(key, shared) {
    nobody has to manually paste the URL in on each new phone/computer. It can
    still be overridden per-device from YOUR SOURCE if you ever need to point
    at a different backend (e.g. testing a new Apps Script deployment). */
-const DEFAULT_CLOUD_URL = "https://script.google.com/macros/s/AKfycbw5xkummk6JOp69L3vkFC8j9O7YJTyT7YDXK_Yy_H_4m_D17BCrN9c5uplYYEndJYMt/exec";
+const DEFAULT_CLOUD_URL = "https://script.google.com/macros/s/AKfycbwWPIUd2ZKjkBoOkFn1mDP8wI-b-TT7fCxnkFGujpt1vMb66MKctCuSfx7HlY3y-EFM/exec";
 
 function getCloudUrl() {
   try {
