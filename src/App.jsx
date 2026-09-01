@@ -10,7 +10,7 @@ import {
   AlertCircle, CheckCircle2, Calendar, FileSpreadsheet, X, History, Sparkles,
   Plus, Image as ImageIcon, Users2, Tag, Percent, CreditCard, Target as TargetIcon,
   Smile, Frown, Camera, Footprints, ChevronDown, SlidersHorizontal, ClipboardList,
-  Trophy, Flame, Star, Zap, Medal, Plane, FileText,
+  Trophy, Flame, Star, Zap, Medal, Plane, FileText, Lock,
 } from "lucide-react";
 
 /* ==================================================================== */
@@ -2172,18 +2172,20 @@ function DocumentWidget() {
 /* Tasks widget — admin creates tasks in Mapping Tool, staff see & tick  */
 /* them off here; incomplete tasks also trigger the alert banner above.  */
 /* ==================================================================== */
-function isTaskForStore(task, store) {
-  return task.toStore === "ALL" || task.toStore === store;
+function isTaskRelevantFor(task, store, nickname) {
+  const storeMatch = task.toStore === "ALL" || task.toStore === store;
+  const personMatch = !task.assignedTo || task.assignedTo === "ALL" || task.assignedTo === nickname;
+  return storeMatch && personMatch;
 }
 
 function TasksWidget({ ctx }) {
   const relevant = useMemo(() => {
-    const list = ctx.tasks.filter((t) => ctx.store === "ALL" || isTaskForStore(t, ctx.store));
+    const list = ctx.tasks.filter((t) => ctx.store === "ALL" ? true : isTaskRelevantFor(t, ctx.store, ctx.session?.nickname));
     return list.sort((a, b) => {
       if (a.completed !== b.completed) return a.completed ? 1 : -1;
       return (a.deadline || "").localeCompare(b.deadline || "");
     });
-  }, [ctx.tasks, ctx.store]);
+  }, [ctx.tasks, ctx.store, ctx.session]);
 
   const toggleComplete = (task) => {
     ctx.saveTask({ ...task, completed: !task.completed, completedAt: !task.completed ? new Date().toISOString() : null });
@@ -2199,7 +2201,7 @@ function TasksWidget({ ctx }) {
         <div className="task-list">
           {relevant.map((t) => {
             const overdue = !t.completed && t.deadline && t.deadline < today;
-            return <TaskCard key={t.id} task={t} overdue={overdue} onToggle={() => toggleComplete(t)} onSave={ctx.saveTask} showToast={ctx.showToast} />;
+            return <TaskCard key={t.id} task={t} overdue={overdue} onToggle={() => toggleComplete(t)} onSave={ctx.saveTask} showToast={ctx.showToast} onAddWidget={ctx.addInstance} />;
           })}
         </div>
       )}
@@ -2207,7 +2209,7 @@ function TasksWidget({ ctx }) {
   );
 }
 
-function TaskCard({ task: t, overdue, onToggle, onSave, showToast }) {
+function TaskCard({ task: t, overdue, onToggle, onSave, showToast, onAddWidget }) {
   const fileRef = useRef(null);
   const staffAttachments = t.staffAttachments || [];
 
@@ -2241,6 +2243,8 @@ function TaskCard({ task: t, overdue, onToggle, onSave, showToast }) {
     onSave({ ...t, staffAttachments: staffAttachments.filter((_, i) => i !== idx) });
   };
 
+  const linkedDef = t.linkedWidget ? WIDGET_DEFS[t.linkedWidget] : null;
+
   return (
     <div className={`task-card${t.completed ? " task-done" : ""}${overdue ? " task-overdue" : ""}`}>
       <label className="task-tick">
@@ -2254,13 +2258,19 @@ function TaskCard({ task: t, overdue, onToggle, onSave, showToast }) {
         </div>
         <div className="task-meta">
           <span>สาขา: {t.toStore === "ALL" ? "ทุกสาขา" : t.toStore}</span>
-          <span>มอบหมาย: {t.assignDate || "-"}</span>
+          <span>มอบหมายให้: {t.assignedTo && t.assignedTo !== "ALL" ? t.assignedTo : "ทุกคนในสาขา"}</span>
+          <span>วันที่มอบหมาย: {t.assignDate || "-"}</span>
           <span>กำหนดส่ง: {t.deadline || "-"}</span>
         </div>
         {t.steps && t.steps.length > 0 && (
           <ol className="task-steps">
             {t.steps.map((s, i) => <li key={i}>{s}</li>)}
           </ol>
+        )}
+        {linkedDef && (
+          <button className="btn btn-outline no-print task-widget-link" onClick={() => { onAddWidget(t.linkedWidget); showToast("success", `เพิ่ม Widget "${linkedDef.title}" แล้ว — เลื่อนลงไปดูด้านล่าง`); }}>
+            {linkedDef.icon} เพิ่ม Widget "{linkedDef.title}" เพื่อทำงานนี้
+          </button>
         )}
         {t.attachment && (
           <a className="task-attachment" href={t.attachment.dataUrl} download={t.attachment.name} target="_blank" rel="noreferrer">
@@ -2294,8 +2304,8 @@ function TaskCard({ task: t, overdue, onToggle, onSave, showToast }) {
 function TaskAlertBanner({ ctx }) {
   const today = new Date().toISOString().slice(0, 10);
   const pending = useMemo(() => {
-    return ctx.tasks.filter((t) => !t.completed && (ctx.store === "ALL" || isTaskForStore(t, ctx.store)));
-  }, [ctx.tasks, ctx.store]);
+    return ctx.tasks.filter((t) => !t.completed && (ctx.store === "ALL" ? true : isTaskRelevantFor(t, ctx.store, ctx.session?.nickname)));
+  }, [ctx.tasks, ctx.store, ctx.session]);
   if (pending.length === 0) return null;
   const overdueCount = pending.filter((t) => t.deadline && t.deadline < today).length;
   return (
@@ -2343,311 +2353,197 @@ const widgetType = (id) => id.split("__")[0];
 const WIDGET_CATALOG_ORDER = ["ภาพรวม", "ยอดขาย", "เป้าหมาย", "บันทึกหน้าร้าน", "เอกสาร", "ข้อมูลเสริม", "กำหนดเอง"];
 
 /* ==================================================================== */
-/* Main App                                                              */
+/* Login / Register — lightweight identity, not real authentication      */
 /* ==================================================================== */
-export default function App() {
-  const [data, setData] = useState({ kpi: SEED_CURRENT, brand: SEED_BRAND, discReason: SEED_DISCREASON, salesPerson: SEED_SALESPERSON, sku: SEED_SKU, promo: SEED_PROMO });
-  const [lyData, setLyData] = useState({ kpi: [], brand: [], discReason: [], salesPerson: [], sku: [], promo: [] });
-  const [demoMode, setDemoMode] = useState(false);
-  const [tenderCurrent, setTenderCurrent] = useState([]);
-  const [tenderLastYear, setTenderLastYear] = useState([]);
-  const [targets, setTargets] = useState([]);
-  const [nationality, setNationality] = useState([]);
-  const [vatRefundRows, setVatRefundRows] = useState([]);
-  const [tasks, setTasks] = useState([]);
-  const [ready, setReady] = useState(false);
+const STORE_LIST = [
+  "ICON SIAM", "MEGA BANGNA", "TERMINAL 21", "SIAM CENTER", "THE MALL NGAMWONGWAN",
+  "FASHION ISLAND", "FUTURE PARK", "THE MALL BANGKAE", "CENTRAL RAMA 9",
+  "CENTRAL PLAZA WESTGATE", "TERMINAL 21 PATTAYA", "CENTRAL RAMA 2",
+  "CENTRAL EASTVILLE", "CENTRAL PINKLAO", "CENTRAL PARK DUSIT",
+];
+const POSITION_LIST = ["PT", "SA", "SSA", "SP", "FM", "ASM", "SM"];
+const MANAGEMENT_POSITIONS = ["FM", "ASM", "SM"]; // always full access, safety net against lockout
+const AUTHORITY_KEY = "settings:authority";
+const PAGE_LIST = [
+  { key: "move", label: "YOUR MOVE" },
+  { key: "source", label: "YOUR SOURCE" },
+];
+function isAllowedWidget(authority, position, type) {
+  if (!position || MANAGEMENT_POSITIONS.includes(position)) return true;
+  const cfg = authority[position];
+  if (!cfg || !cfg.widgets) return true; // not configured = full access by default
+  return cfg.widgets.includes(type);
+}
+function isAllowedPage(authority, position, page) {
+  if (page === "build") return true;
+  if (!position || MANAGEMENT_POSITIONS.includes(position)) return true;
+  const cfg = authority[position];
+  if (!cfg || !cfg.pages) return true;
+  return cfg.pages.includes(page);
+}
+const SESSION_KEY = "session:currentUser";
+const USER_PREFIX = "user:";
 
-  const [store, setStore] = useState("ALL");
-  const [from, setFrom] = useState("2026-08-01");
-  const [to, setTo] = useState("2026-08-10");
-  const [footfall, setFootfallState] = useState(0);
+async function hashPassword(pw) {
+  try {
+    const enc = new TextEncoder().encode(pw);
+    const buf = await crypto.subtle.digest("SHA-256", enc);
+    return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  } catch (e) {
+    return pw; // extremely old browser fallback — still better than nothing
+  }
+}
 
-  const [toast, setToast] = useState(null);
-  const [widgetOrder, setWidgetOrder] = useState(DEFAULT_ORDER);
-  const [hidden, setHidden] = useState([]);
-  const [scales, setScales] = useState({});
-  const [dragId, setDragId] = useState(null);
-  const [submission, setSubmission] = useState(null);
-  const [webhookUrl, setWebhookUrl] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [page, setPage] = useState("build"); // "build" | "move" | "source"
-  const [launcherOpen, setLauncherOpen] = useState(false);
-  const [favorites, setFavorites] = useState([]);
+function LoginScreen({ onLogin }) {
+  const [mode, setMode] = useState("login"); // "login" | "register"
+  const [users, setUsers] = useState([]);
+  const [loadingUsers, setLoadingUsers] = useState(true);
+  const [selectedNickname, setSelectedNickname] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
 
-  const fileCurrentRef = useRef(null), fileLastYearRef = useRef(null), fileTenderRef = useRef(null), fileTargetRef = useRef(null), fileNationalityRef = useRef(null), fileVatRefundRef = useRef(null);
+  const [regNickname, setRegNickname] = useState("");
+  const [regPassword, setRegPassword] = useState("");
+  const [regPassword2, setRegPassword2] = useState("");
+  const [regStore, setRegStore] = useState(STORE_LIST[0]);
+  const [regPosition, setRegPosition] = useState(POSITION_LIST[0]);
+  const [regGoal, setRegGoal] = useState("");
 
-  const showToast = useCallback((type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 4200); }, []);
-
-  useEffect(() => {
-    (async () => {
-      try { const v = await window.storage.get("data:current", true); if (v?.value) setData(JSON.parse(v.value)); } catch (e) {}
-      try { const v = await window.storage.get("data:lastyear", true); if (v?.value) { const p = JSON.parse(v.value); setLyData(p.data || lyData); setDemoMode(!!p.demo); } } catch (e) {}
-      try { const v = await window.storage.get("data:tender", true); if (v?.value) { const p = JSON.parse(v.value); setTenderCurrent(p.current || []); setTenderLastYear(p.lastYear || []); } } catch (e) {}
-      try { const v = await window.storage.get("data:targets", true); if (v?.value) setTargets(JSON.parse(v.value)); } catch (e) {}
-      try { const v = await window.storage.get("data:nationality", true); if (v?.value) setNationality(JSON.parse(v.value)); } catch (e) {}
-      try { const v = await window.storage.get("data:vatrefund", true); if (v?.value) setVatRefundRows(JSON.parse(v.value)); } catch (e) {}
-      try { const v = await window.storage.get("data:tasks", true); if (v?.value) setTasks(JSON.parse(v.value)); } catch (e) {}
-      try { const v = await window.storage.get("layout", false); if (v?.value) { const p = JSON.parse(v.value); if (p.order) setWidgetOrder(p.order); if (p.hidden) setHidden(p.hidden); if (p.scales) setScales(p.scales); } } catch (e) {}
-      try { const v = await window.storage.get("favoriteWidgets", false); if (v?.value) setFavorites(JSON.parse(v.value)); } catch (e) {}
-      try { const v = await window.storage.get("settings:webhookUrl", false); if (v?.value) setWebhookUrl(JSON.parse(v.value)); } catch (e) {}
-      setReady(true);
-    })();
+  const loadUsers = useCallback(async () => {
+    setLoadingUsers(true);
+    try {
+      const list = await window.storage.list(USER_PREFIX, true);
+      const keys = list?.keys || [];
+      const out = [];
+      for (const k of keys) {
+        try { const v = await window.storage.get(k, true); if (v?.value) out.push(JSON.parse(v.value)); } catch (e) {}
+      }
+      out.sort((a, b) => a.nickname.localeCompare(b.nickname));
+      setUsers(out);
+      if (out.length && !selectedNickname) setSelectedNickname(out[0].nickname);
+    } catch (e) {}
+    setLoadingUsers(false);
     // eslint-disable-next-line
   }, []);
+  useEffect(() => { loadUsers(); }, [loadUsers]);
 
-  const stores = useMemo(() => Array.from(new Set(data.kpi.map((r) => r.store))).sort(), [data.kpi]);
-  const availableDates = useMemo(() => { const d = data.kpi.map((r) => r.date).sort(); return { min: d[0] || "2026-08-01", max: d[d.length - 1] || "2026-08-10" }; }, [data.kpi]);
-
-  useEffect(() => {
-    (async () => { try { const v = await window.storage.get(`footfall:${store}:${from}:${to}`, true); setFootfallState(v?.value ? JSON.parse(v.value) : 0); } catch (e) { setFootfallState(0); } })();
-  }, [store, from, to]);
-
-  const submissionKey = `submission:${store}:${from}:${to}`;
-  useEffect(() => {
-    (async () => { try { const v = await window.storage.get(submissionKey, true); setSubmission(v?.value ? JSON.parse(v.value) : null); } catch (e) { setSubmission(null); } })();
-  }, [submissionKey]);
-
-  const persistData = useCallback(async (d) => { try { await window.storage.set("data:current", JSON.stringify(d), true); } catch (e) {} }, []);
-  const persistLy = useCallback(async (d, demo) => { try { await window.storage.set("data:lastyear", JSON.stringify({ data: d, demo }), true); } catch (e) {} }, []);
-  const persistTender = useCallback(async (cur, ly) => { try { await window.storage.set("data:tender", JSON.stringify({ current: cur, lastYear: ly }), true); } catch (e) {} }, []);
-  const persistTargets = useCallback(async (t) => { try { await window.storage.set("data:targets", JSON.stringify(t), true); } catch (e) {} }, []);
-  const persistNationality = useCallback(async (n) => { try { await window.storage.set("data:nationality", JSON.stringify(n), true); } catch (e) {} }, []);
-  const persistVatRefund = useCallback(async (rows) => { try { await window.storage.set("data:vatrefund", JSON.stringify(rows), true); } catch (e) {} }, []);
-  const saveWebhookUrl = useCallback(async (url) => {
-    setWebhookUrl(url);
-    try { await window.storage.set("settings:webhookUrl", JSON.stringify(url), false); showToast("success", "บันทึกลิงก์ Webhook แล้ว"); } catch (e) { showToast("error", "บันทึกไม่สำเร็จ"); }
-  }, [showToast]);
-  const persistTasks = useCallback(async (next) => { try { await window.storage.set("data:tasks", JSON.stringify(next), true); } catch (e) {} }, []);
-  const saveTask = useCallback((task) => {
-    setTasks((prev) => {
-      const idx = prev.findIndex((t) => t.id === task.id);
-      const next = idx >= 0 ? prev.map((t) => (t.id === task.id ? task : t)) : [...prev, task];
-      persistTasks(next);
-      return next;
-    });
-  }, [persistTasks]);
-  const deleteTask = useCallback((id) => {
-    setTasks((prev) => { const next = prev.filter((t) => t.id !== id); persistTasks(next); return next; });
-  }, [persistTasks]);
-  const persistLayout = useCallback(async (order, hid, sc) => { try { await window.storage.set("layout", JSON.stringify({ order, hidden: hid, scales: sc }), false); } catch (e) {} }, []);
-
-  const readFile = async (file) => {
-    const ext = file.name.split(".").pop().toLowerCase();
-    if (ext === "csv") { const text = await file.text(); return Papa.parse(text, { header: true, skipEmptyLines: true }).data; }
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: "array", cellDates: true });
-    return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: null });
-  };
-
-  const handleSalesUpload = useCallback(async (fileList, target) => {
-    const files = Array.from(fileList || []); if (files.length === 0) return;
-    let allRows = [];
-    for (const file of files) { try { allRows = allRows.concat(await readFile(file)); } catch (e) { showToast("error", `อ่านไฟล์ "${file.name}" ไม่สำเร็จ: ${e.message}`); return; } }
-    const agg = aggregateAllFromRows(allRows);
-    if (agg.error) { showToast("error", agg.error); return; }
-    if (target === "current") {
-      setData((prev) => {
-        const next = {
-          kpi: mergeByKey(prev.kpi, agg.kpi, (r) => `${r.store}__${r.date}`),
-          brand: mergeByKey(prev.brand, agg.brand, (r) => `${r.store}__${r.date}__${r.brand}`),
-          discReason: mergeByKey(prev.discReason, agg.discReason, (r) => `${r.store}__${r.date}__${r.reason}`),
-          salesPerson: mergeByKey(prev.salesPerson, agg.salesPerson, (r) => `${r.store}__${r.date}__${r.person}`),
-          sku: mergeByKey(prev.sku, agg.sku, (r) => `${r.store}__${r.date}__${r.sku}`),
-          promo: mergeByKey(prev.promo, agg.promo, (r) => `${r.store}__${r.date}`),
-        };
-        persistData(next); return next;
-      });
-      showToast("success", `อัปโหลดข้อมูลปีนี้สำเร็จ (${agg.kpi.length} วัน-สาขา)`);
-    } else {
-      setDemoMode(false);
-      setLyData((prev) => {
-        const next = {
-          kpi: mergeByKey(prev.kpi, agg.kpi, (r) => `${r.store}__${r.date}`),
-          brand: mergeByKey(prev.brand, agg.brand, (r) => `${r.store}__${r.date}__${r.brand}`),
-          discReason: mergeByKey(prev.discReason, agg.discReason, (r) => `${r.store}__${r.date}__${r.reason}`),
-          salesPerson: mergeByKey(prev.salesPerson, agg.salesPerson, (r) => `${r.store}__${r.date}__${r.person}`),
-          sku: mergeByKey(prev.sku, agg.sku, (r) => `${r.store}__${r.date}__${r.sku}`),
-          promo: mergeByKey(prev.promo, agg.promo, (r) => `${r.store}__${r.date}`),
-        };
-        persistLy(next, false); return next;
-      });
-      showToast("success", `อัปโหลดข้อมูลปีที่แล้วสำเร็จ (${agg.kpi.length} วัน-สาขา)`);
+  const doLogin = async () => {
+    setError("");
+    const user = users.find((u) => u.nickname === selectedNickname);
+    if (!user) { setError("เลือกชื่อเล่นก่อนเข้าสู่ระบบ"); return; }
+    if (!loginPassword) { setError("กรอกรหัสผ่าน"); return; }
+    setBusy(true);
+    const hash = await hashPassword(loginPassword);
+    if (hash !== user.passwordHash) {
+      setBusy(false);
+      setError("รหัสผ่านไม่ถูกต้อง");
+      return;
     }
-  }, [showToast, persistData, persistLy]);
+    try { await window.storage.set(SESSION_KEY, JSON.stringify(user), false); } catch (e) {}
+    setBusy(false);
+    onLogin(user);
+  };
 
-  const handleTenderUpload = useCallback(async (fileList, target) => {
-    const files = Array.from(fileList || []); if (files.length === 0) return;
-    let allRows = [];
-    for (const file of files) { try { allRows = allRows.concat(await readFile(file)); } catch (e) { showToast("error", `อ่านไฟล์ "${file.name}" ไม่สำเร็จ`); return; } }
-    const { records, error } = parseTenderRows(allRows);
-    if (error) { showToast("error", error); return; }
-    if (target === "current") {
-      setTenderCurrent((prev) => { const next = mergeByKey(prev, records, (r) => `${r.store}__${r.date}`); persistTender(next, tenderLastYear); return next; });
-    } else {
-      setTenderLastYear((prev) => { const next = mergeByKey(prev, records, (r) => `${r.store}__${r.date}`); persistTender(tenderCurrent, next); return next; });
+  const doRegister = async () => {
+    setError("");
+    if (!regNickname.trim()) { setError("กรอกชื่อเล่นก่อน"); return; }
+    if (!regPassword) { setError("ตั้งรหัสผ่านก่อน"); return; }
+    if (regPassword.length < 4) { setError("รหัสผ่านต้องมีอย่างน้อย 4 ตัวอักษร"); return; }
+    if (regPassword !== regPassword2) { setError("รหัสผ่านทั้งสองช่องไม่ตรงกัน"); return; }
+    if (users.some((u) => u.nickname.toLowerCase() === regNickname.trim().toLowerCase())) {
+      setError("ชื่อเล่นนี้มีคนใช้แล้ว ลองชื่ออื่น หรือเข้าสู่ระบบด้วยชื่อนี้แทน");
+      return;
     }
-    showToast("success", `อัปโหลดข้อมูล Tender สำเร็จ (${records.length} วัน-สาขา)`);
-  }, [showToast, persistTender, tenderCurrent, tenderLastYear]);
-
-  const handleTargetUpload = useCallback(async (fileList) => {
-    const files = Array.from(fileList || []); if (files.length === 0) return;
-    let allRows = [];
-    for (const file of files) { try { allRows = allRows.concat(await readFile(file)); } catch (e) { showToast("error", `อ่านไฟล์ "${file.name}" ไม่สำเร็จ`); return; } }
-    const { records, error } = parseTargetRows(allRows);
-    if (error) { showToast("error", error); return; }
-    setTargets((prev) => { const next = mergeByKey(prev, records, (r) => `${r.store}__${r.month}`); persistTargets(next); return next; });
-    showToast("success", `อัปโหลดไฟล์ Target สำเร็จ (${records.length} รายการ)`);
-  }, [showToast, persistTargets]);
-
-  const handleNationalityUpload = useCallback(async (fileList) => {
-    const files = Array.from(fileList || []); if (files.length === 0) return;
-    let allRows = [];
-    for (const file of files) { try { allRows = allRows.concat(await readFile(file)); } catch (e) { showToast("error", `อ่านไฟล์ "${file.name}" ไม่สำเร็จ`); return; } }
-    const { records, error } = parseNationalityRows(allRows);
-    if (error) { showToast("error", error); return; }
-    setNationality((prev) => { const next = mergeByKey(prev, records, (r) => `${r.store}__${r.date}__${r.nationality}`); persistNationality(next); return next; });
-    showToast("success", `อัปโหลดไฟล์สัดส่วนลูกค้าสำเร็จ (${records.length} รายการ)`);
-  }, [showToast, persistNationality]);
-
-  const handleVatRefundUpload = useCallback(async (fileList) => {
-    const files = Array.from(fileList || []); if (files.length === 0) return;
-    let allRows = [];
-    for (const file of files) { try { allRows = allRows.concat(await readFile(file)); } catch (e) { showToast("error", `อ่านไฟล์ "${file.name}" ไม่สำเร็จ`); return; } }
-    if (allRows.length === 0) { showToast("error", "ไม่พบข้อมูลในไฟล์"); return; }
-    setVatRefundRows(allRows);
-    persistVatRefund(allRows);
-    showToast("success", `อัปโหลดไฟล์ VAT Refund สำเร็จ (${allRows.length} แถว) — เปิดดูที่ widget VAT Refund Tracker ได้เลย`);
-  }, [showToast, persistVatRefund]);
-
-  const toggleDemo = useCallback(() => {
-    if (demoMode) {
-      const empty = { kpi: [], brand: [], discReason: [], salesPerson: [], sku: [], promo: [] };
-      setLyData(empty); setDemoMode(false); persistLy(empty, false); showToast("success", "ล้างข้อมูลตัวอย่างปีที่แล้วแล้ว");
-    } else {
-      const demo = {
-        kpi: scaleDemoRecords(data.kpi, ["netSales", "grossSales", "discount", "qty", "tax", "receipts"]),
-        brand: scaleDemoRecords(data.brand, ["netSales", "grossSales", "qty"]),
-        discReason: scaleDemoRecords(data.discReason, ["bills", "discountValue"]),
-        salesPerson: scaleDemoRecords(data.salesPerson, ["netSales", "qty"]),
-        sku: scaleDemoRecords(data.sku, ["qty", "netSales"]),
-        promo: scaleDemoRecords(data.promo, ["promoBills"]),
-      };
-      setLyData(demo); setDemoMode(true); persistLy(demo, true); showToast("success", "โหลดข้อมูลตัวอย่างปีที่แล้วเรียบร้อย (สำหรับดูตัวอย่างฟีเจอร์เท่านั้น)");
-    }
-  }, [demoMode, data, persistLy, showToast]);
-
-  const dates = useMemo(() => dateRangeArray(from, to), [from, to]);
-  const lyDates = useMemo(() => dates.map((d) => shiftYearDate(d, -1)), [dates]);
-  const curTotals = useMemo(() => sumKpi(data.kpi, store, dates), [data.kpi, store, dates]);
-  const lyTotals = useMemo(() => sumKpi(lyData.kpi, store, lyDates), [lyData.kpi, store, lyDates]);
-  const hasLY = lyTotals.found;
-
-  const tickerItems = useMemo(() => stores.map((s) => {
-    const c = sumKpi(data.kpi, s, dates); const l = sumKpi(lyData.kpi, s, lyDates);
-    return { store: s, netSales: c.netSales, g: l.found ? growth(c.netSales, l.netSales) : null };
-  }).sort((a, b) => b.netSales - a.netSales), [stores, data.kpi, lyData.kpi, dates, lyDates]);
-
-  const setFootfall = useCallback((n) => setFootfallState(n), []);
-
-  const ctx = { store, from, to, dates, lyDates, data, lyData, tenderCurrent, tenderLastYear, targets, nationality, vatRefundRows, tasks, saveTask, deleteTask, stores, curTotals, lyTotals, hasLY, footfall, setFootfall, showToast, demoMode };
-
-  /* drag & drop reorder */
-  const onDragStart = (e, id) => { setDragId(id); e.dataTransfer.effectAllowed = "move"; };
-  const onDragOver = (e) => { e.preventDefault(); };
-  const onDrop = (e, targetId) => {
-    e.preventDefault();
-    if (!dragId || dragId === targetId) return;
-    setWidgetOrder((prev) => {
-      const next = prev.filter((id) => id !== dragId);
-      const idx = next.indexOf(targetId);
-      next.splice(idx, 0, dragId);
-      persistLayout(next, hidden, scales);
-      return next;
-    });
-    setDragId(null);
-  };
-  const hideWidget = (id) => {
-    const type = widgetType(id);
-    if (WIDGET_DEFS[type]?.multi) {
-      setWidgetOrder((prev) => { const next = prev.filter((x) => x !== id); persistLayout(next, hidden, scales); return next; });
-    } else {
-      setHidden((prev) => { const next = [...prev, id]; persistLayout(widgetOrder, next, scales); return next; });
-    }
-  };
-  const showWidget = (id) => {
-    setWidgetOrder((prevOrder) => {
-      const nextOrder = prevOrder.includes(id) ? prevOrder : [...prevOrder, id];
-      setHidden((prevHidden) => {
-        const nextHidden = prevHidden.filter((x) => x !== id);
-        persistLayout(nextOrder, nextHidden, scales);
-        return nextHidden;
-      });
-      return nextOrder;
-    });
-  };
-  const addInstance = (type) => {
-    const uid = `${type}__${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    setWidgetOrder((prev) => { const next = [...prev, uid]; persistLayout(next, hidden, scales); return next; });
-  };
-  const updateScale = (id, value) => {
-    setScales((prev) => { const next = { ...prev, [id]: value }; persistLayout(widgetOrder, hidden, next); return next; });
-  };
-
-  const toggleFavorite = (type) => {
-    setFavorites((prev) => {
-      const next = prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type];
-      try { window.storage.set("favoriteWidgets", JSON.stringify(next), false); } catch (e) {}
-      return next;
-    });
-  };
-
-  const createCustomWidget = async (config) => {
-    const uid = `customwidget__${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    try { await window.storage.set(`customcfg:${uid}`, JSON.stringify(config), false); } catch (e) {}
-    setWidgetOrder((prev) => { const next = [...prev, uid]; persistLayout(next, hidden, scales); return next; });
-    setLauncherOpen(false);
-    showToast("success", `สร้าง Widget "${config.name}" แล้ว`);
-  };
-
-  const visibleWidgets = widgetOrder.filter((id) => !hidden.includes(id));
-  const hiddenWidgets = widgetOrder.filter((id) => hidden.includes(id));
-
-  const submitReport = useCallback(async () => {
-    setSubmitting(true);
+    setBusy(true);
+    const passwordHash = await hashPassword(regPassword);
+    const user = { id: `user_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, nickname: regNickname.trim(), passwordHash, store: regStore, position: regPosition, goal: regGoal.trim(), registeredAt: new Date().toISOString() };
     try {
-      const payload = {
-        store, from, to, submittedAt: new Date().toISOString(),
-        netSales: curTotals.netSales, grossSales: curTotals.grossSales, discount: curTotals.discount,
-        qty: curTotals.qty, receipts: curTotals.receipts,
-        widgetOrder: visibleWidgets,
-      };
-      await window.storage.set(submissionKey, JSON.stringify(payload), true);
-      setSubmission(payload);
-      if (webhookUrl) {
-        try {
-          await fetch(webhookUrl, {
-            method: "POST", mode: "no-cors",
-            headers: { "Content-Type": "text/plain" },
-            body: JSON.stringify({ type: "submission", ...payload }),
-          });
-          showToast("success", "ส่งรายงานแล้ว — บันทึกไป Google Drive ด้วย กำลังเปิดหน้าต่างพิมพ์ PDF");
-        } catch (e2) {
-          showToast("error", "ส่งรายงานสำเร็จ แต่ส่งไป Google Drive ไม่สำเร็จ (เช็คลิงก์ Webhook ในหน้า YOUR SOURCE)");
-        }
-      } else {
-        showToast("success", "ส่งรายงานแล้ว — กำลังเปิดหน้าต่างพิมพ์ PDF");
-      }
-    } catch (e) { showToast("error", "ส่งรายงานไม่สำเร็จ ลองอีกครั้ง"); }
-    setSubmitting(false);
-    setTimeout(() => window.print(), 250);
-  }, [store, from, to, curTotals, submissionKey, showToast, visibleWidgets, webhookUrl]);
-
-  const handlePrint = useCallback(() => window.print(), []);
+      await window.storage.set(USER_PREFIX + user.id, JSON.stringify(user), true);
+      await window.storage.set(SESSION_KEY, JSON.stringify(user), false);
+    } catch (e) {}
+    setBusy(false);
+    onLogin(user);
+  };
 
   return (
-    <div className="app-root">
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+    <div className="login-page">
+      <div className="login-hero">
+        <div className="login-hero-text">
+          <div className="hero-line">A WINNER IS A</div>
+          <div className="hero-correction-wrap">
+            <span className="hero-struck">LOSER</span>
+            <span className="hero-fixed">WINNER</span>
+          </div>
+          <div className="hero-line">WHO TRIED</div>
+          <div className="hero-big">ONE MORE TIME</div>
+        </div>
+      </div>
+      <div className="login-page-form">
+      <div className="login-card">
+        <div className="login-brand">
+          <div className="brand-mark">SA</div>
+          <div><div className="brand-title">Create your<br />space</div></div>
+        </div>
+
+        <div className="login-tabs">
+          <button className={`login-tab${mode === "login" ? " login-tab-active" : ""}`} onClick={() => setMode("login")}>เข้าสู่ระบบ</button>
+          <button className={`login-tab${mode === "register" ? " login-tab-active" : ""}`} onClick={() => setMode("register")}>สมัครสมาชิก</button>
+        </div>
+
+        {mode === "login" ? (
+          <div>
+            {loadingUsers ? (
+              <div className="empty-hint">กำลังโหลดรายชื่อ...</div>
+            ) : users.length === 0 ? (
+              <div className="empty-hint">ยังไม่มีใครสมัครสมาชิก — กดแท็บ "สมัครสมาชิก" เพื่อเริ่มต้น</div>
+            ) : (
+              <>
+                <label className="field-label">ชื่อเล่นของคุณ</label>
+                <select value={selectedNickname} onChange={(e) => setSelectedNickname(e.target.value)}>
+                  {users.map((u) => <option key={u.id} value={u.nickname}>{u.nickname} · {u.store} · {u.position}</option>)}
+                </select>
+                <label className="field-label">รหัสผ่าน</label>
+                <input type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} placeholder="รหัสผ่าน" onKeyDown={(e) => { if (e.key === "Enter") doLogin(); }} />
+                {error && <div className="login-error">{error}</div>}
+                <button className="btn btn-primary btn-block" style={{ marginTop: ".9rem" }} onClick={doLogin} disabled={busy}>
+                  <CheckCircle2 size={15} /> เข้าสู่ระบบ
+                </button>
+              </>
+            )}
+          </div>
+        ) : (
+          <div>
+            <label className="field-label">ชื่อเล่น</label>
+            <input type="text" value={regNickname} onChange={(e) => setRegNickname(e.target.value)} placeholder="เช่น ฟ้า, ต้น, มายด์" />
+            <label className="field-label">ตั้งรหัสผ่าน</label>
+            <input type="password" value={regPassword} onChange={(e) => setRegPassword(e.target.value)} placeholder="อย่างน้อย 4 ตัวอักษร" />
+            <label className="field-label">ยืนยันรหัสผ่านอีกครั้ง</label>
+            <input type="password" value={regPassword2} onChange={(e) => setRegPassword2(e.target.value)} placeholder="พิมพ์รหัสผ่านอีกครั้ง" />
+            <label className="field-label">สาขา</label>
+            <select value={regStore} onChange={(e) => setRegStore(e.target.value)}>
+              {STORE_LIST.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <label className="field-label">ตำแหน่ง</label>
+            <select value={regPosition} onChange={(e) => setRegPosition(e.target.value)}>
+              {POSITION_LIST.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+            <label className="field-label">เป้าหมายที่คุณคิดว่าอยากทำให้สำเร็จคืออะไร</label>
+            <textarea value={regGoal} onChange={(e) => setRegGoal(e.target.value)} placeholder="เช่น อยากทำยอดให้ถึงเป้าทุกเดือน, อยากขึ้นตำแหน่ง SSA..." />
+            {error && <div className="login-error">{error}</div>}
+            <button className="btn btn-primary btn-block" style={{ marginTop: ".9rem" }} onClick={doRegister} disabled={busy}>
+              <Sparkles size={15} /> สมัครสมาชิก & เข้าสู่ระบบ
+            </button>
+          </div>
+        )}
+      </div>
+      </div>
+    </div>
+  );
+}
+
+const GLOBAL_STYLES = `
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&family=Caveat:wght@600;700&display=swap');
         :root{
           --ink:#0B0B0C; --paper:#FAFAF8; --card:#FFFFFF; --line:#E7E7E2;
           --text:#111111; --mute:#68685f; --yellow:#FFC800; --yellow-dark:#D9A900;
@@ -2666,6 +2562,8 @@ export default function App() {
         .topnav-active{ background:var(--ink); }
         .topnav-active .topnav-label{ color:var(--yellow); }
         .topnav-active .topnav-sub{ color:#C9C9C0; }
+        .topnav-locked{ cursor:not-allowed; opacity:.45; }
+        .topnav-locked .topnav-label{ color:var(--mute); }
 
         .soon-page{ max-width:640px; margin:4rem auto; text-align:center; padding:2rem; }
         .soon-badge{ width:64px; height:64px; border-radius:50%; background:var(--ink); color:var(--yellow); display:flex; align-items:center; justify-content:center; margin:0 auto 1.2rem; animation:badge-pop .6s ease; }
@@ -2678,6 +2576,9 @@ export default function App() {
         .mapping-card-soon .mapping-cols{ background:#1A1A1A; border-color:#2C2C2C; color:#B9B9B0; }
         .mapping-soon-box{ display:flex; align-items:center; gap:.5rem; background:#1A1A1A; border:1px dashed #3A3A36; border-radius:9px; padding:.7rem; color:var(--yellow); font-weight:700; font-size:.82rem; }
         .mapping-card-webhook{ border-color:var(--yellow-dark); }
+        .authority-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:.5rem; }
+        .authority-check{ display:flex; align-items:center; gap:.4rem; font-size:.82rem; background:#FCFCFA; border:1px solid var(--line); border-radius:8px; padding:.45rem .6rem; }
+        .authority-widgets-head{ display:flex; justify-content:space-between; align-items:center; }
 
         .task-alert{ display:flex; align-items:flex-start; gap:.6rem; background:var(--ink); color:var(--yellow); border-radius:14px; padding:.85rem 1rem; margin-bottom:1rem; font-size:.85rem; line-height:1.5; }
         .task-alert-text b{ color:#fff; }
@@ -2695,6 +2596,7 @@ export default function App() {
         .task-steps-form li{ display:flex; align-items:center; gap:.4rem; }
         .task-step-remove{ border:none; background:none; color:#D4283F; cursor:pointer; display:inline-flex; }
         .task-attachment{ display:inline-block; margin-top:.4rem; font-size:.78rem; color:var(--yellow-dark); text-decoration:underline; }
+        .task-widget-link{ margin:.5rem 0; display:inline-flex; }
         .task-staff-attach{ margin-top:.6rem; padding-top:.55rem; border-top:1px dashed var(--line); }
         .task-staff-attach-label{ font-size:.7rem; font-weight:700; color:var(--mute); text-transform:uppercase; letter-spacing:.03em; margin-bottom:.4rem; }
         .task-file-thumb{ width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.2rem; background:#FCFCFA; color:var(--text); text-decoration:none; font-size:1.2rem; text-align:center; }
@@ -2836,6 +2738,35 @@ export default function App() {
         .empty-dashboard{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.6rem; text-align:center; padding:3rem 1.5rem; background:var(--card); border:1.5px dashed var(--line); border-radius:20px; color:var(--mute); }
         .empty-dashboard-title{ font-family:'Space Grotesk',sans-serif; font-weight:800; font-size:1.05rem; color:var(--text); }
         .empty-dashboard-sub{ font-size:.82rem; max-width:360px; line-height:1.6; margin-bottom:.4rem; }
+
+        .login-page{ min-height:100vh; display:flex; align-items:stretch; justify-content:center; background:var(--paper); }
+        .login-hero{ flex:1.2; position:relative; background:var(--paper); display:flex; align-items:center; justify-content:center; padding:3rem 2.5rem; overflow:visible; min-height:340px; }
+        .login-hero-text{ position:relative; }
+        .hero-line{ font-family:'Caveat',cursive; font-weight:600; color:#141414; font-size:clamp(1.6rem,3.4vw,2.3rem); line-height:1.15; }
+        .hero-correction-wrap{ position:relative; display:inline-block; margin:.15em 0 .25em; }
+        .hero-struck{ font-family:'Caveat',cursive; font-weight:600; color:#8a8a85; font-size:clamp(1.6rem,3.4vw,2.3rem); text-decoration:line-through; text-decoration-color:#D4283F; text-decoration-thickness:3px; }
+        .hero-fixed{ position:absolute; left:.15em; top:-1.05em; font-family:'Caveat',cursive; font-weight:700; color:#D4283F; font-size:clamp(1.6rem,3.4vw,2.3rem); transform:rotate(-6deg); white-space:nowrap; }
+        .hero-fixed::after{ content:''; position:absolute; left:-.3em; top:50%; width:.5em; height:2px; background:#D4283F; transform:rotate(-15deg); }
+        .hero-big{ font-family:'Caveat',cursive; font-weight:700; color:var(--ink); font-size:clamp(2.6rem,7vw,4.6rem); line-height:1; margin-top:.2em; }
+        .login-page-form{ flex:1; display:flex; align-items:center; justify-content:center; background:var(--paper); padding:1.5rem; }
+        .login-card{ width:100%; max-width:420px; background:#fff; border:1px solid var(--line); border-radius:22px; padding:1.8rem; box-shadow:0 10px 40px rgba(0,0,0,.08); }
+        .login-brand{ display:flex; align-items:center; gap:.7rem; margin-bottom:1.4rem; }
+        .login-tabs{ display:flex; gap:.4rem; margin-bottom:1.2rem; background:#F1F3F0; border-radius:11px; padding:.25rem; }
+        .login-tab{ flex:1; border:none; background:none; padding:.55rem; border-radius:9px; font-weight:700; font-size:.83rem; color:var(--mute); cursor:pointer; }
+        .login-tab-active{ background:var(--ink); color:var(--yellow); }
+        .login-error{ font-size:.78rem; color:#D4283F; margin-top:.5rem; background:#FCE9EB; border-radius:8px; padding:.5rem .7rem; }
+        @media (max-width: 820px){
+          .login-page{ flex-direction:column; }
+          .login-hero{ min-height:200px; padding:2.2rem 1.5rem 1.2rem; }
+        }
+
+        .profile-chip{ display:flex; align-items:center; gap:.55rem; background:#FCFCFA; border:1px solid var(--line); border-radius:13px; padding:.6rem .7rem; margin-bottom:1rem; }
+        .profile-avatar{ width:32px; height:32px; border-radius:50%; background:var(--ink); color:var(--yellow); display:flex; align-items:center; justify-content:center; font-weight:800; font-size:.85rem; flex-shrink:0; }
+        .profile-info{ flex:1; min-width:0; }
+        .profile-name{ font-weight:700; font-size:.83rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .profile-meta{ font-size:.68rem; color:var(--mute); }
+        .profile-logout{ border:none; background:none; color:var(--mute); cursor:pointer; padding:.2rem; border-radius:5px; flex-shrink:0; }
+        .profile-logout:hover{ background:#eee; color:#D4283F; }
 
         .kpi-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:.6rem; }
         .kpi-card{ background:#FCFCFA; border:1px solid var(--line); border-radius:16px; padding:.8rem .9rem; transition:transform .15s, box-shadow .15s; }
@@ -2981,9 +2912,348 @@ export default function App() {
           .reflect-bar{ background:#fff; border:1px solid #ddd; }
           .reflect-label{ color:#111; }
         }
-      `}</style>
+`;
 
-      <TopNav page={page} onChange={setPage} />
+export default function Root() {
+  const [session, setSession] = useState(null);
+  const [checked, setChecked] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try { const v = await window.storage.get(SESSION_KEY, false); if (v?.value) setSession(JSON.parse(v.value)); } catch (e) {}
+      setChecked(true);
+    })();
+  }, []);
+
+  const logout = useCallback(async () => {
+    try { await window.storage.delete(SESSION_KEY, false); } catch (e) {}
+    setSession(null);
+  }, []);
+
+  if (!checked) return null;
+  return (
+    <>
+      <style>{GLOBAL_STYLES}</style>
+      {!session ? <LoginScreen onLogin={setSession} /> : <Dashboard session={session} onLogout={logout} />}
+    </>
+  );
+}
+
+/* ==================================================================== */
+/* Main App                                                              */
+/* ==================================================================== */
+function Dashboard({ session, onLogout }) {
+  const [data, setData] = useState({ kpi: SEED_CURRENT, brand: SEED_BRAND, discReason: SEED_DISCREASON, salesPerson: SEED_SALESPERSON, sku: SEED_SKU, promo: SEED_PROMO });
+  const [lyData, setLyData] = useState({ kpi: [], brand: [], discReason: [], salesPerson: [], sku: [], promo: [] });
+  const [demoMode, setDemoMode] = useState(false);
+  const [tenderCurrent, setTenderCurrent] = useState([]);
+  const [tenderLastYear, setTenderLastYear] = useState([]);
+  const [targets, setTargets] = useState([]);
+  const [nationality, setNationality] = useState([]);
+  const [vatRefundRows, setVatRefundRows] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [authority, setAuthority] = useState({});
+  const [ready, setReady] = useState(false);
+
+  const [store, setStore] = useState(session?.store && STORE_LIST.includes(session.store) ? session.store : "ALL");
+  const [from, setFrom] = useState("2026-08-01");
+  const [to, setTo] = useState("2026-08-10");
+  const [footfall, setFootfallState] = useState(0);
+
+  const [toast, setToast] = useState(null);
+  const [widgetOrder, setWidgetOrder] = useState(DEFAULT_ORDER);
+  const [hidden, setHidden] = useState([]);
+  const [scales, setScales] = useState({});
+  const [dragId, setDragId] = useState(null);
+  const [submission, setSubmission] = useState(null);
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [page, setPage] = useState("build"); // "build" | "move" | "source"
+  useEffect(() => {
+    if (!isAllowedPage(authority, session?.position, page)) setPage("build");
+  }, [authority, session, page]);
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const [favorites, setFavorites] = useState([]);
+
+  const fileCurrentRef = useRef(null), fileLastYearRef = useRef(null), fileTenderRef = useRef(null), fileTargetRef = useRef(null), fileNationalityRef = useRef(null), fileVatRefundRef = useRef(null);
+
+  const showToast = useCallback((type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 4200); }, []);
+
+  useEffect(() => {
+    (async () => {
+      try { const v = await window.storage.get("data:current", true); if (v?.value) setData(JSON.parse(v.value)); } catch (e) {}
+      try { const v = await window.storage.get("data:lastyear", true); if (v?.value) { const p = JSON.parse(v.value); setLyData(p.data || lyData); setDemoMode(!!p.demo); } } catch (e) {}
+      try { const v = await window.storage.get("data:tender", true); if (v?.value) { const p = JSON.parse(v.value); setTenderCurrent(p.current || []); setTenderLastYear(p.lastYear || []); } } catch (e) {}
+      try { const v = await window.storage.get("data:targets", true); if (v?.value) setTargets(JSON.parse(v.value)); } catch (e) {}
+      try { const v = await window.storage.get("data:nationality", true); if (v?.value) setNationality(JSON.parse(v.value)); } catch (e) {}
+      try { const v = await window.storage.get("data:vatrefund", true); if (v?.value) setVatRefundRows(JSON.parse(v.value)); } catch (e) {}
+      try { const v = await window.storage.get("data:tasks", true); if (v?.value) setTasks(JSON.parse(v.value)); } catch (e) {}
+      try { const v = await window.storage.get(AUTHORITY_KEY, true); if (v?.value) setAuthority(JSON.parse(v.value)); } catch (e) {}
+      try { const v = await window.storage.get("layout", false); if (v?.value) { const p = JSON.parse(v.value); if (p.order) setWidgetOrder(p.order); if (p.hidden) setHidden(p.hidden); if (p.scales) setScales(p.scales); } } catch (e) {}
+      try { const v = await window.storage.get("favoriteWidgets", false); if (v?.value) setFavorites(JSON.parse(v.value)); } catch (e) {}
+      try { const v = await window.storage.get("settings:webhookUrl", false); if (v?.value) setWebhookUrl(JSON.parse(v.value)); } catch (e) {}
+      setReady(true);
+    })();
+    // eslint-disable-next-line
+  }, []);
+
+  const stores = useMemo(() => Array.from(new Set(data.kpi.map((r) => r.store))).sort(), [data.kpi]);
+  const availableDates = useMemo(() => { const d = data.kpi.map((r) => r.date).sort(); return { min: d[0] || "2026-08-01", max: d[d.length - 1] || "2026-08-10" }; }, [data.kpi]);
+
+  useEffect(() => {
+    (async () => { try { const v = await window.storage.get(`footfall:${store}:${from}:${to}`, true); setFootfallState(v?.value ? JSON.parse(v.value) : 0); } catch (e) { setFootfallState(0); } })();
+  }, [store, from, to]);
+
+  const submissionKey = `submission:${store}:${from}:${to}`;
+  useEffect(() => {
+    (async () => { try { const v = await window.storage.get(submissionKey, true); setSubmission(v?.value ? JSON.parse(v.value) : null); } catch (e) { setSubmission(null); } })();
+  }, [submissionKey]);
+
+  const persistData = useCallback(async (d) => { try { await window.storage.set("data:current", JSON.stringify(d), true); } catch (e) {} }, []);
+  const persistLy = useCallback(async (d, demo) => { try { await window.storage.set("data:lastyear", JSON.stringify({ data: d, demo }), true); } catch (e) {} }, []);
+  const persistTender = useCallback(async (cur, ly) => { try { await window.storage.set("data:tender", JSON.stringify({ current: cur, lastYear: ly }), true); } catch (e) {} }, []);
+  const persistTargets = useCallback(async (t) => { try { await window.storage.set("data:targets", JSON.stringify(t), true); } catch (e) {} }, []);
+  const persistNationality = useCallback(async (n) => { try { await window.storage.set("data:nationality", JSON.stringify(n), true); } catch (e) {} }, []);
+  const persistVatRefund = useCallback(async (rows) => { try { await window.storage.set("data:vatrefund", JSON.stringify(rows), true); } catch (e) {} }, []);
+  const saveWebhookUrl = useCallback(async (url) => {
+    setWebhookUrl(url);
+    try { await window.storage.set("settings:webhookUrl", JSON.stringify(url), false); showToast("success", "บันทึกลิงก์ Webhook แล้ว"); } catch (e) { showToast("error", "บันทึกไม่สำเร็จ"); }
+  }, [showToast]);
+  const persistTasks = useCallback(async (next) => { try { await window.storage.set("data:tasks", JSON.stringify(next), true); } catch (e) {} }, []);
+  const saveTask = useCallback((task) => {
+    setTasks((prev) => {
+      const idx = prev.findIndex((t) => t.id === task.id);
+      const next = idx >= 0 ? prev.map((t) => (t.id === task.id ? task : t)) : [...prev, task];
+      persistTasks(next);
+      return next;
+    });
+  }, [persistTasks]);
+  const deleteTask = useCallback((id) => {
+    setTasks((prev) => { const next = prev.filter((t) => t.id !== id); persistTasks(next); return next; });
+  }, [persistTasks]);
+  const saveAuthority = useCallback(async (next) => {
+    setAuthority(next);
+    try { await window.storage.set(AUTHORITY_KEY, JSON.stringify(next), true); } catch (e) {}
+  }, []);
+  const persistLayout = useCallback(async (order, hid, sc) => { try { await window.storage.set("layout", JSON.stringify({ order, hidden: hid, scales: sc }), false); } catch (e) {} }, []);
+
+  const readFile = async (file) => {
+    const ext = file.name.split(".").pop().toLowerCase();
+    if (ext === "csv") { const text = await file.text(); return Papa.parse(text, { header: true, skipEmptyLines: true }).data; }
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array", cellDates: true });
+    return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: null });
+  };
+
+  const handleSalesUpload = useCallback(async (fileList, target) => {
+    const files = Array.from(fileList || []); if (files.length === 0) return;
+    let allRows = [];
+    for (const file of files) { try { allRows = allRows.concat(await readFile(file)); } catch (e) { showToast("error", `อ่านไฟล์ "${file.name}" ไม่สำเร็จ: ${e.message}`); return; } }
+    const agg = aggregateAllFromRows(allRows);
+    if (agg.error) { showToast("error", agg.error); return; }
+    if (target === "current") {
+      setData((prev) => {
+        const next = {
+          kpi: mergeByKey(prev.kpi, agg.kpi, (r) => `${r.store}__${r.date}`),
+          brand: mergeByKey(prev.brand, agg.brand, (r) => `${r.store}__${r.date}__${r.brand}`),
+          discReason: mergeByKey(prev.discReason, agg.discReason, (r) => `${r.store}__${r.date}__${r.reason}`),
+          salesPerson: mergeByKey(prev.salesPerson, agg.salesPerson, (r) => `${r.store}__${r.date}__${r.person}`),
+          sku: mergeByKey(prev.sku, agg.sku, (r) => `${r.store}__${r.date}__${r.sku}`),
+          promo: mergeByKey(prev.promo, agg.promo, (r) => `${r.store}__${r.date}`),
+        };
+        persistData(next); return next;
+      });
+      showToast("success", `อัปโหลดข้อมูลปีนี้สำเร็จ (${agg.kpi.length} วัน-สาขา)`);
+    } else {
+      setDemoMode(false);
+      setLyData((prev) => {
+        const next = {
+          kpi: mergeByKey(prev.kpi, agg.kpi, (r) => `${r.store}__${r.date}`),
+          brand: mergeByKey(prev.brand, agg.brand, (r) => `${r.store}__${r.date}__${r.brand}`),
+          discReason: mergeByKey(prev.discReason, agg.discReason, (r) => `${r.store}__${r.date}__${r.reason}`),
+          salesPerson: mergeByKey(prev.salesPerson, agg.salesPerson, (r) => `${r.store}__${r.date}__${r.person}`),
+          sku: mergeByKey(prev.sku, agg.sku, (r) => `${r.store}__${r.date}__${r.sku}`),
+          promo: mergeByKey(prev.promo, agg.promo, (r) => `${r.store}__${r.date}`),
+        };
+        persistLy(next, false); return next;
+      });
+      showToast("success", `อัปโหลดข้อมูลปีที่แล้วสำเร็จ (${agg.kpi.length} วัน-สาขา)`);
+    }
+  }, [showToast, persistData, persistLy]);
+
+  const handleTenderUpload = useCallback(async (fileList, target) => {
+    const files = Array.from(fileList || []); if (files.length === 0) return;
+    let allRows = [];
+    for (const file of files) { try { allRows = allRows.concat(await readFile(file)); } catch (e) { showToast("error", `อ่านไฟล์ "${file.name}" ไม่สำเร็จ`); return; } }
+    const { records, error } = parseTenderRows(allRows);
+    if (error) { showToast("error", error); return; }
+    if (target === "current") {
+      setTenderCurrent((prev) => { const next = mergeByKey(prev, records, (r) => `${r.store}__${r.date}`); persistTender(next, tenderLastYear); return next; });
+    } else {
+      setTenderLastYear((prev) => { const next = mergeByKey(prev, records, (r) => `${r.store}__${r.date}`); persistTender(tenderCurrent, next); return next; });
+    }
+    showToast("success", `อัปโหลดข้อมูล Tender สำเร็จ (${records.length} วัน-สาขา)`);
+  }, [showToast, persistTender, tenderCurrent, tenderLastYear]);
+
+  const handleTargetUpload = useCallback(async (fileList) => {
+    const files = Array.from(fileList || []); if (files.length === 0) return;
+    let allRows = [];
+    for (const file of files) { try { allRows = allRows.concat(await readFile(file)); } catch (e) { showToast("error", `อ่านไฟล์ "${file.name}" ไม่สำเร็จ`); return; } }
+    const { records, error } = parseTargetRows(allRows);
+    if (error) { showToast("error", error); return; }
+    setTargets((prev) => { const next = mergeByKey(prev, records, (r) => `${r.store}__${r.month}`); persistTargets(next); return next; });
+    showToast("success", `อัปโหลดไฟล์ Target สำเร็จ (${records.length} รายการ)`);
+  }, [showToast, persistTargets]);
+
+  const handleNationalityUpload = useCallback(async (fileList) => {
+    const files = Array.from(fileList || []); if (files.length === 0) return;
+    let allRows = [];
+    for (const file of files) { try { allRows = allRows.concat(await readFile(file)); } catch (e) { showToast("error", `อ่านไฟล์ "${file.name}" ไม่สำเร็จ`); return; } }
+    const { records, error } = parseNationalityRows(allRows);
+    if (error) { showToast("error", error); return; }
+    setNationality((prev) => { const next = mergeByKey(prev, records, (r) => `${r.store}__${r.date}__${r.nationality}`); persistNationality(next); return next; });
+    showToast("success", `อัปโหลดไฟล์สัดส่วนลูกค้าสำเร็จ (${records.length} รายการ)`);
+  }, [showToast, persistNationality]);
+
+  const handleVatRefundUpload = useCallback(async (fileList) => {
+    const files = Array.from(fileList || []); if (files.length === 0) return;
+    let allRows = [];
+    for (const file of files) { try { allRows = allRows.concat(await readFile(file)); } catch (e) { showToast("error", `อ่านไฟล์ "${file.name}" ไม่สำเร็จ`); return; } }
+    if (allRows.length === 0) { showToast("error", "ไม่พบข้อมูลในไฟล์"); return; }
+    setVatRefundRows(allRows);
+    persistVatRefund(allRows);
+    showToast("success", `อัปโหลดไฟล์ VAT Refund สำเร็จ (${allRows.length} แถว) — เปิดดูที่ widget VAT Refund Tracker ได้เลย`);
+  }, [showToast, persistVatRefund]);
+
+  const toggleDemo = useCallback(() => {
+    if (demoMode) {
+      const empty = { kpi: [], brand: [], discReason: [], salesPerson: [], sku: [], promo: [] };
+      setLyData(empty); setDemoMode(false); persistLy(empty, false); showToast("success", "ล้างข้อมูลตัวอย่างปีที่แล้วแล้ว");
+    } else {
+      const demo = {
+        kpi: scaleDemoRecords(data.kpi, ["netSales", "grossSales", "discount", "qty", "tax", "receipts"]),
+        brand: scaleDemoRecords(data.brand, ["netSales", "grossSales", "qty"]),
+        discReason: scaleDemoRecords(data.discReason, ["bills", "discountValue"]),
+        salesPerson: scaleDemoRecords(data.salesPerson, ["netSales", "qty"]),
+        sku: scaleDemoRecords(data.sku, ["qty", "netSales"]),
+        promo: scaleDemoRecords(data.promo, ["promoBills"]),
+      };
+      setLyData(demo); setDemoMode(true); persistLy(demo, true); showToast("success", "โหลดข้อมูลตัวอย่างปีที่แล้วเรียบร้อย (สำหรับดูตัวอย่างฟีเจอร์เท่านั้น)");
+    }
+  }, [demoMode, data, persistLy, showToast]);
+
+  const dates = useMemo(() => dateRangeArray(from, to), [from, to]);
+  const lyDates = useMemo(() => dates.map((d) => shiftYearDate(d, -1)), [dates]);
+  const curTotals = useMemo(() => sumKpi(data.kpi, store, dates), [data.kpi, store, dates]);
+  const lyTotals = useMemo(() => sumKpi(lyData.kpi, store, lyDates), [lyData.kpi, store, lyDates]);
+  const hasLY = lyTotals.found;
+
+  const tickerItems = useMemo(() => stores.map((s) => {
+    const c = sumKpi(data.kpi, s, dates); const l = sumKpi(lyData.kpi, s, lyDates);
+    return { store: s, netSales: c.netSales, g: l.found ? growth(c.netSales, l.netSales) : null };
+  }).sort((a, b) => b.netSales - a.netSales), [stores, data.kpi, lyData.kpi, dates, lyDates]);
+
+  const setFootfall = useCallback((n) => setFootfallState(n), []);
+
+  /* drag & drop reorder */
+  const onDragStart = (e, id) => { setDragId(id); e.dataTransfer.effectAllowed = "move"; };
+  const onDragOver = (e) => { e.preventDefault(); };
+  const onDrop = (e, targetId) => {
+    e.preventDefault();
+    if (!dragId || dragId === targetId) return;
+    setWidgetOrder((prev) => {
+      const next = prev.filter((id) => id !== dragId);
+      const idx = next.indexOf(targetId);
+      next.splice(idx, 0, dragId);
+      persistLayout(next, hidden, scales);
+      return next;
+    });
+    setDragId(null);
+  };
+  const hideWidget = (id) => {
+    const type = widgetType(id);
+    if (WIDGET_DEFS[type]?.multi) {
+      setWidgetOrder((prev) => { const next = prev.filter((x) => x !== id); persistLayout(next, hidden, scales); return next; });
+    } else {
+      setHidden((prev) => { const next = [...prev, id]; persistLayout(widgetOrder, next, scales); return next; });
+    }
+  };
+  const showWidget = (id) => {
+    setWidgetOrder((prevOrder) => {
+      const nextOrder = prevOrder.includes(id) ? prevOrder : [...prevOrder, id];
+      setHidden((prevHidden) => {
+        const nextHidden = prevHidden.filter((x) => x !== id);
+        persistLayout(nextOrder, nextHidden, scales);
+        return nextHidden;
+      });
+      return nextOrder;
+    });
+  };
+  const addInstance = (type) => {
+    const uid = `${type}__${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    setWidgetOrder((prev) => { const next = [...prev, uid]; persistLayout(next, hidden, scales); return next; });
+  };
+  const updateScale = (id, value) => {
+    setScales((prev) => { const next = { ...prev, [id]: value }; persistLayout(widgetOrder, hidden, next); return next; });
+  };
+
+  const toggleFavorite = (type) => {
+    setFavorites((prev) => {
+      const next = prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type];
+      try { window.storage.set("favoriteWidgets", JSON.stringify(next), false); } catch (e) {}
+      return next;
+    });
+  };
+
+  const createCustomWidget = async (config) => {
+    const uid = `customwidget__${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    try { await window.storage.set(`customcfg:${uid}`, JSON.stringify(config), false); } catch (e) {}
+    setWidgetOrder((prev) => { const next = [...prev, uid]; persistLayout(next, hidden, scales); return next; });
+    setLauncherOpen(false);
+    showToast("success", `สร้าง Widget "${config.name}" แล้ว`);
+  };
+
+  const visibleWidgets = widgetOrder.filter((id) => !hidden.includes(id) && isAllowedWidget(authority, session?.position, widgetType(id)));
+  const hiddenWidgets = widgetOrder.filter((id) => hidden.includes(id));
+
+  const ctx = { store, from, to, dates, lyDates, data, lyData, tenderCurrent, tenderLastYear, targets, nationality, vatRefundRows, tasks, saveTask, deleteTask, stores, curTotals, lyTotals, hasLY, footfall, setFootfall, showToast, demoMode, session, addInstance, authority };
+
+  const submitReport = useCallback(async () => {
+    setSubmitting(true);
+    try {
+      const payload = {
+        store, from, to, submittedAt: new Date().toISOString(),
+        netSales: curTotals.netSales, grossSales: curTotals.grossSales, discount: curTotals.discount,
+        qty: curTotals.qty, receipts: curTotals.receipts,
+        widgetOrder: visibleWidgets,
+      };
+      await window.storage.set(submissionKey, JSON.stringify(payload), true);
+      setSubmission(payload);
+      if (webhookUrl) {
+        try {
+          await fetch(webhookUrl, {
+            method: "POST", mode: "no-cors",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({ type: "submission", ...payload }),
+          });
+          showToast("success", "ส่งรายงานแล้ว — บันทึกไป Google Drive ด้วย กำลังเปิดหน้าต่างพิมพ์ PDF");
+        } catch (e2) {
+          showToast("error", "ส่งรายงานสำเร็จ แต่ส่งไป Google Drive ไม่สำเร็จ (เช็คลิงก์ Webhook ในหน้า YOUR SOURCE)");
+        }
+      } else {
+        showToast("success", "ส่งรายงานแล้ว — กำลังเปิดหน้าต่างพิมพ์ PDF");
+      }
+    } catch (e) { showToast("error", "ส่งรายงานไม่สำเร็จ ลองอีกครั้ง"); }
+    setSubmitting(false);
+    setTimeout(() => window.print(), 250);
+  }, [store, from, to, curTotals, submissionKey, showToast, visibleWidgets, webhookUrl]);
+
+  const handlePrint = useCallback(() => window.print(), []);
+
+  return (
+    <div className="app-root">
+
+      <TopNav page={page} onChange={setPage} authority={authority} position={session?.position} />
 
       <div className="ticker-wrap no-print">
         <div className="ticker-track">
@@ -3014,6 +3284,7 @@ export default function App() {
           data={data} tenderCurrent={tenderCurrent} targets={targets} nationality={nationality} vatRefundRows={vatRefundRows}
           webhookUrl={webhookUrl} saveWebhookUrl={saveWebhookUrl}
           tasks={tasks} saveTask={saveTask} deleteTask={deleteTask} stores={stores}
+          authority={authority} saveAuthority={saveAuthority}
         />
       ) : (
       <div className="layout">
@@ -3021,6 +3292,15 @@ export default function App() {
           <div className="brand">
             <div className="brand-mark">SA</div>
             <div><div className="brand-title">Create your<br />space</div><div className="brand-sub">ประกอบแดชบอร์ดของคุณเอง</div></div>
+          </div>
+
+          <div className="profile-chip">
+            <div className="profile-avatar">{(session?.nickname || "?").slice(0, 1).toUpperCase()}</div>
+            <div className="profile-info">
+              <div className="profile-name">{session?.nickname}</div>
+              <div className="profile-meta">{session?.store} · {session?.position}</div>
+            </div>
+            <button className="profile-logout" onClick={onLogout} title="ออกจากระบบ"><X size={13} /></button>
           </div>
 
           <div className="panel submit-panel">
@@ -3079,6 +3359,8 @@ export default function App() {
               onShow={showWidget}
               onCreateCustom={createCustomWidget}
               onClose={() => setLauncherOpen(false)}
+              authority={authority}
+              position={session?.position}
             />
           )}
 
@@ -3124,7 +3406,7 @@ export default function App() {
 /* ==================================================================== */
 /* Top-level navigation — YOUR BUILD / YOUR MOVE / YOUR SOURCE           */
 /* ==================================================================== */
-function TopNav({ page, onChange }) {
+function TopNav({ page, onChange, authority, position }) {
   const items = [
     { key: "build", label: "YOUR BUILD", sub: "Create your space" },
     { key: "move", label: "YOUR MOVE", sub: "Soon", soon: true },
@@ -3133,12 +3415,20 @@ function TopNav({ page, onChange }) {
   return (
     <div className="topnav no-print">
       <div className="topnav-inner">
-        {items.map((it) => (
-          <button key={it.key} className={`topnav-item${page === it.key ? " topnav-active" : ""}`} onClick={() => onChange(it.key)}>
-            <span className="topnav-label">{it.label}{it.soon && <span className="topnav-soon">SOON</span>}</span>
-            <span className="topnav-sub">{it.sub}</span>
-          </button>
-        ))}
+        {items.map((it) => {
+          const allowed = isAllowedPage(authority || {}, position, it.key);
+          return (
+            <button
+              key={it.key}
+              className={`topnav-item${page === it.key ? " topnav-active" : ""}${!allowed ? " topnav-locked" : ""}`}
+              onClick={() => { if (allowed) onChange(it.key); }}
+              title={allowed ? undefined : "ตำแหน่งของคุณไม่มีสิทธิ์เข้าหน้านี้"}
+            >
+              <span className="topnav-label">{it.label}{it.soon && <span className="topnav-soon">SOON</span>}{!allowed && <Lock size={11} />}</span>
+              <span className="topnav-sub">{it.sub}</span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -3204,7 +3494,7 @@ function CloudStorageSettingsCard() {
   );
 }
 
-function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLastYearRef, fileTenderRef, fileTargetRef, fileNationalityRef, fileVatRefundRef, handleSalesUpload, handleTenderUpload, handleTargetUpload, handleNationalityUpload, handleVatRefundUpload, data, tenderCurrent, targets, nationality, vatRefundRows, webhookUrl, saveWebhookUrl, tasks, saveTask, deleteTask, stores }) {
+function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLastYearRef, fileTenderRef, fileTargetRef, fileNationalityRef, fileVatRefundRef, handleSalesUpload, handleTenderUpload, handleTargetUpload, handleNationalityUpload, handleVatRefundUpload, data, tenderCurrent, targets, nationality, vatRefundRows, webhookUrl, saveWebhookUrl, tasks, saveTask, deleteTask, stores, authority, saveAuthority }) {
   const [urlInput, setUrlInput] = useState(webhookUrl || "");
   useEffect(() => { setUrlInput(webhookUrl || ""); }, [webhookUrl]);
 
@@ -3310,6 +3600,7 @@ function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLas
       <DocUploadAdmin docType="announcement" label="Announcement" icon={<Zap size={13} />} />
       <DocUploadAdmin docType="training" label="Training Tool" icon={<Trophy size={13} />} />
       <TaskManagerAdmin tasks={tasks} saveTask={saveTask} deleteTask={deleteTask} stores={stores} />
+      <AuthorityAdmin authority={authority} saveAuthority={saveAuthority} />
     </div>
   );
 }
@@ -3409,11 +3700,27 @@ function DocUploadAdmin({ docType, label, icon }) {
 }
 
 function TaskManagerAdmin({ tasks, saveTask, deleteTask, stores }) {
-  const blank = { id: "", assignDate: new Date().toISOString().slice(0, 10), toStore: "ALL", topics: "", deadline: "", steps: [], attachment: null, completed: false };
+  const blank = { id: "", assignDate: new Date().toISOString().slice(0, 10), toStore: "ALL", assignedTo: "ALL", linkedWidget: "", topics: "", deadline: "", steps: [], attachment: null, completed: false };
   const [form, setForm] = useState(blank);
   const [stepInput, setStepInput] = useState("");
+  const [users, setUsers] = useState([]);
   const fileRef = useRef(null);
   const editing = !!form.id;
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const list = await window.storage.list(USER_PREFIX, true);
+        const keys = list?.keys || [];
+        const out = [];
+        for (const k of keys) { try { const v = await window.storage.get(k, true); if (v?.value) out.push(JSON.parse(v.value)); } catch (e) {} }
+        out.sort((a, b) => a.nickname.localeCompare(b.nickname));
+        setUsers(out);
+      } catch (e) {}
+    })();
+  }, []);
+
+  const usersInStore = form.toStore === "ALL" ? users : users.filter((u) => u.store === form.toStore);
 
   const addStep = () => {
     if (!stepInput.trim()) return;
@@ -3443,7 +3750,7 @@ function TaskManagerAdmin({ tasks, saveTask, deleteTask, stores }) {
   return (
     <div className="mapping-card" style={{ marginTop: "1rem" }}>
       <div className="panel-title"><CheckCircle2 size={13} /> จัดการ Tasks (สำหรับแอดมิน)</div>
-      <div className="mapping-cols">สร้างงานมอบหมายให้สาขา — พนักงานจะเห็นเป็น Alert ที่หน้า YOUR BUILD และดูรายละเอียด/ติ๊กเสร็จได้ที่ Widget "Tasks"</div>
+      <div className="mapping-cols">สร้างงานมอบหมายให้สาขา หรือพนักงานคนใดคนหนึ่งโดยเฉพาะ — พนักงานจะเห็นเป็น Alert ที่หน้า YOUR BUILD และดูรายละเอียด/ติ๊กเสร็จได้ที่ Widget "Tasks"</div>
 
       <div className="task-form-grid">
         <div>
@@ -3452,7 +3759,7 @@ function TaskManagerAdmin({ tasks, saveTask, deleteTask, stores }) {
         </div>
         <div>
           <label className="field-label">To Store</label>
-          <select value={form.toStore} onChange={(e) => setForm((f) => ({ ...f, toStore: e.target.value }))}>
+          <select value={form.toStore} onChange={(e) => setForm((f) => ({ ...f, toStore: e.target.value, assignedTo: "ALL" }))}>
             <option value="ALL">ทุกสาขา</option>
             {stores.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
@@ -3463,8 +3770,22 @@ function TaskManagerAdmin({ tasks, saveTask, deleteTask, stores }) {
         </div>
       </div>
 
+      <label className="field-label">มอบหมายให้ (เลือกได้ว่าจะให้ทั้งสาขา หรือคนเดียว)</label>
+      <select value={form.assignedTo} onChange={(e) => setForm((f) => ({ ...f, assignedTo: e.target.value }))}>
+        <option value="ALL">ทุกคนในสาขา</option>
+        {usersInStore.map((u) => <option key={u.id} value={u.nickname}>{u.nickname} · {u.store} · {u.position}</option>)}
+      </select>
+      {usersInStore.length === 0 && <div className="widget-note">ยังไม่มีพนักงานสมัครสมาชิกไว้สำหรับสาขานี้ — จะมอบหมายให้ "ทุกคนในสาขา" แทนไปก่อนได้</div>}
+
       <label className="field-label">Topics</label>
-      <input type="text" value={form.topics} onChange={(e) => setForm((f) => ({ ...f, topics: e.target.value }))} placeholder="เช่น เปลี่ยน Visual Merchandising โซนหน้าร้าน" />
+      <input type="text" value={form.topics} onChange={(e) => setForm((f) => ({ ...f, topics: e.target.value }))} placeholder="เช่น Competitor Analysis Week 31" />
+
+      <label className="field-label">Widget ที่เกี่ยวข้อง (ไม่บังคับ)</label>
+      <select value={form.linkedWidget} onChange={(e) => setForm((f) => ({ ...f, linkedWidget: e.target.value }))}>
+        <option value="">ไม่ผูก Widget</option>
+        {Object.entries(WIDGET_DEFS).map(([type, def]) => <option key={type} value={type}>{def.title}</option>)}
+      </select>
+      <div className="widget-note">ถ้าเลือกไว้ พนักงานจะมีปุ่ม "เพิ่ม Widget นี้" ในการ์ด Task เพื่อเปิดเครื่องมือทำงานนั้นได้ทันที</div>
 
       <label className="field-label">Step (เพิ่มขั้นตอนได้หลายอัน)</label>
       <div className="task-step-input-row">
@@ -3498,7 +3819,7 @@ function TaskManagerAdmin({ tasks, saveTask, deleteTask, stores }) {
             <div className={`task-admin-row${t.completed ? " task-done" : ""}`} key={t.id}>
               <div>
                 <b>{t.topics}</b>
-                <div className="task-meta"><span>{t.toStore === "ALL" ? "ทุกสาขา" : t.toStore}</span><span>กำหนด: {t.deadline || "-"}</span>{t.completed && <span className="badge badge-pos">เสร็จแล้ว</span>}</div>
+                <div className="task-meta"><span>{t.toStore === "ALL" ? "ทุกสาขา" : t.toStore}</span><span>มอบหมาย: {t.assignedTo && t.assignedTo !== "ALL" ? t.assignedTo : "ทุกคน"}</span><span>กำหนด: {t.deadline || "-"}</span>{t.completed && <span className="badge badge-pos">เสร็จแล้ว</span>}</div>
               </div>
               <div style={{ display: "flex", gap: ".4rem" }}>
                 <button className="btn btn-outline" onClick={() => loadForEdit(t)}>แก้ไข</button>
@@ -3512,11 +3833,80 @@ function TaskManagerAdmin({ tasks, saveTask, deleteTask, stores }) {
   );
 }
 
+function AuthorityAdmin({ authority, saveAuthority }) {
+  const editablePositions = POSITION_LIST.filter((p) => !MANAGEMENT_POSITIONS.includes(p));
+  const [selected, setSelected] = useState(editablePositions[0] || POSITION_LIST[0]);
+  const widgetTypes = Object.entries(WIDGET_DEFS).filter(([type]) => type !== "customwidget");
+
+  const [draftPages, setDraftPages] = useState(PAGE_LIST.map((p) => p.key));
+  const [draftWidgets, setDraftWidgets] = useState(widgetTypes.map(([type]) => type));
+
+  useEffect(() => {
+    const cfg = authority[selected] || null;
+    setDraftPages(cfg?.pages ?? PAGE_LIST.map((p) => p.key));
+    setDraftWidgets(cfg?.widgets ?? widgetTypes.map(([type]) => type));
+    // eslint-disable-next-line
+  }, [selected, authority]);
+
+  const togglePage = (key) => setDraftPages((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
+  const toggleWidget = (type) => setDraftWidgets((prev) => (prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type]));
+  const selectAllWidgets = () => setDraftWidgets(widgetTypes.map(([type]) => type));
+  const clearAllWidgets = () => setDraftWidgets([]);
+
+  const save = () => {
+    saveAuthority({ ...authority, [selected]: { pages: draftPages, widgets: draftWidgets } });
+  };
+
+  return (
+    <div className="mapping-card" style={{ marginTop: "1rem" }}>
+      <div className="panel-title"><Lock size={13} /> สิทธิ์การเข้าถึงตามตำแหน่ง (Authority)</div>
+      <div className="mapping-cols">
+        กำหนดว่าแต่ละตำแหน่งเข้าหน้าไหน หรือใช้ Widget อะไรได้บ้าง — ตำแหน่งผู้บริหาร (FM, ASM, SM) จะเข้าถึงได้ทุกอย่างเสมอโดยอัตโนมัติ เพื่อป้องกันการล็อกตัวเองออกจากระบบโดยไม่ตั้งใจ ส่วนตำแหน่งที่ยังไม่เคยตั้งค่าไว้จะเข้าถึงได้ทุกอย่างเป็นค่าเริ่มต้นเช่นกัน
+      </div>
+
+      <label className="field-label">เลือกตำแหน่งที่จะตั้งค่า</label>
+      <select value={selected} onChange={(e) => setSelected(e.target.value)}>
+        {editablePositions.map((p) => <option key={p} value={p}>{p}</option>)}
+      </select>
+
+      <div className="panel-title" style={{ marginTop: "1rem" }}>หน้าที่เข้าถึงได้</div>
+      <div className="authority-grid">
+        {PAGE_LIST.map((p) => (
+          <label key={p.key} className="authority-check">
+            <input type="checkbox" checked={draftPages.includes(p.key)} onChange={() => togglePage(p.key)} /> {p.label}
+          </label>
+        ))}
+      </div>
+
+      <div className="panel-title authority-widgets-head" style={{ marginTop: "1rem" }}>
+        <span>Widget ที่ใช้ได้</span>
+        <span style={{ display: "flex", gap: ".4rem" }}>
+          <button className="chip" type="button" onClick={selectAllWidgets}>เลือกทั้งหมด</button>
+          <button className="chip chip-clear" type="button" onClick={clearAllWidgets}>ล้างทั้งหมด</button>
+        </span>
+      </div>
+      <div className="authority-grid">
+        {widgetTypes.map(([type, def]) => (
+          <label key={type} className="authority-check">
+            <input type="checkbox" checked={draftWidgets.includes(type)} onChange={() => toggleWidget(type)} /> {def.title}
+          </label>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "1rem" }}>
+        <button className="btn btn-primary" onClick={save}><Save size={14} /> บันทึกสิทธิ์ของตำแหน่ง {selected}</button>
+      </div>
+
+      <div className="widget-note" style={{ marginTop: ".8rem" }}>ตำแหน่งผู้บริหาร (FM, ASM, SM) ไม่ต้องตั้งค่า — เข้าถึงได้ทุกอย่างเสมอ</div>
+    </div>
+  );
+}
+
 
 /* ==================================================================== */
 /* Widget Launcher — Quick Widget / Your Widget / Favourite Widget       */
 /* ==================================================================== */
-function WidgetLauncher({ favorites, toggleFavorite, hidden, widgetOrder, onAdd, onShow, onCreateCustom, onClose }) {
+function WidgetLauncher({ favorites, toggleFavorite, hidden, widgetOrder, onAdd, onShow, onCreateCustom, onClose, authority, position }) {
   const [tab, setTab] = useState("quick"); // "quick" | "yours" | "favorite"
 
   const catalogByCategory = useMemo(() => {
@@ -3524,12 +3914,13 @@ function WidgetLauncher({ favorites, toggleFavorite, hidden, widgetOrder, onAdd,
     for (const cat of WIDGET_CATALOG_ORDER) map.set(cat, []);
     for (const [type, def] of Object.entries(WIDGET_DEFS)) {
       if (type === "customwidget") continue; // created via Your Widget tab, not listed here
+      if (!isAllowedWidget(authority || {}, position, type)) continue; // hidden by Authority settings
       const cat = def.category || "อื่นๆ";
       if (!map.has(cat)) map.set(cat, []);
       map.get(cat).push({ type, ...def });
     }
     return map;
-  }, []);
+  }, [authority, position]);
 
   const renderAddButton = (type, def) => {
     if (def.multi) {
@@ -3540,7 +3931,10 @@ function WidgetLauncher({ favorites, toggleFavorite, hidden, widgetOrder, onAdd,
     return <button className="btn btn-outline launcher-add-btn" onClick={() => onShow(type)}><Plus size={12} /> แสดง</button>;
   };
 
-  const favoriteDefs = favorites.map((type) => ({ type, ...WIDGET_DEFS[type] })).filter((d) => d.title);
+  const favoriteDefs = favorites
+    .filter((type) => isAllowedWidget(authority || {}, position, type))
+    .map((type) => ({ type, ...WIDGET_DEFS[type] }))
+    .filter((d) => d.title);
 
   return (
     <div className="launcher-overlay no-print" onClick={onClose}>
