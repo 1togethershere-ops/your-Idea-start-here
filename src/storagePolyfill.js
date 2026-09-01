@@ -124,18 +124,33 @@ function cloudDelete(key) {
   }).catch(() => {});
 }
 
+function safeLocalSet(fullKey, value, mustSucceed) {
+  try {
+    localStorage.setItem(fullKey, value);
+    return true;
+  } catch (e) {
+    // Quota exceeded — very common once a few photo/file attachments pile up,
+    // since localStorage typically caps out around 5–10MB total. This is
+    // fine for shared data (the cloud copy is the real source of truth), so
+    // we swallow the error there; for personal data localStorage IS the
+    // store, so that failure has to be surfaced.
+    if (mustSucceed) throw e;
+    return false;
+  }
+}
+
 window.storage = {
   async get(key, shared = false) {
     if (shared && getCloudUrl()) {
       const cached = cacheGet(key);
       if (cached !== undefined) {
-        localStorage.setItem(storageKey(key, shared), cached);
+        safeLocalSet(storageKey(key, shared), cached, false);
         return { key, value: cached, shared };
       }
       try {
         const value = await cloudGet(key);
         cacheSet(key, value);
-        localStorage.setItem(storageKey(key, shared), value); // cache locally too
+        safeLocalSet(storageKey(key, shared), value, false); // best-effort local cache
         return { key, value, shared };
       } catch (e) {
         // fall through to local cache below if the cloud read fails
@@ -147,7 +162,7 @@ window.storage = {
   },
 
   async set(key, value, shared = false) {
-    localStorage.setItem(storageKey(key, shared), value);
+    safeLocalSet(storageKey(key, shared), value, !shared);
     if (shared) cloudSet(key, value);
     return { key, value, shared };
   },
@@ -166,7 +181,7 @@ window.storage = {
           const keys = [];
           for (const it of items) {
             cacheSet(it.key, it.value);
-            localStorage.setItem(storageKey(it.key, shared), it.value);
+            safeLocalSet(storageKey(it.key, shared), it.value, false); // best-effort
             keys.push(it.key);
           }
           return { keys, prefix, shared };
