@@ -1873,27 +1873,27 @@ function CompetitorAnalysisWidget({ ctx, widgetId }) {
         .toolbar{ position:sticky; top:0; background:#111; padding:.8rem 1.2rem; display:flex; justify-content:space-between; align-items:center; z-index:10; }
         .toolbar button{ background:#FFC800; color:#111; border:none; font-weight:700; padding:.55rem 1.1rem; border-radius:8px; cursor:pointer; font-size:.85rem; }
         .toolbar span{ color:#fff; font-family:monospace; font-size:.8rem; }
-        .slide{ width:1000px; margin:1.5rem auto; background:#fff; box-shadow:0 8px 24px rgba(0,0,0,.3); page-break-after:always; overflow:hidden; }
-        .slide-topbar{ background:#111; color:#fff; padding:.7rem 1.1rem; display:flex; justify-content:space-between; align-items:center; font-weight:800; letter-spacing:.03em; }
-        .slide-topbar-title{ font-size:1rem; }
-        .slide-topbar-mark{ font-style:italic; font-weight:900; font-size:1.1rem; }
-        .slide-body{ display:flex; align-items:stretch; gap:14px; padding:14px; }
-        .slide-photos{ flex:1.15; display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; gap:8px; min-height:0; }
-        .slide-photo{ border-radius:4px; overflow:hidden; background:#eee; display:flex; align-items:center; justify-content:center; min-height:140px; }
+        .slide{ width:45.156cm; height:25.4cm; margin:1.5rem auto; background:#fff; box-shadow:0 8px 24px rgba(0,0,0,.3); page-break-after:always; overflow:hidden; display:flex; flex-direction:column; }
+        .slide-topbar{ background:#111; color:#fff; padding:1.1rem 1.8rem; display:flex; justify-content:space-between; align-items:center; font-weight:800; letter-spacing:.03em; flex-shrink:0; }
+        .slide-topbar-title{ font-size:1.6rem; }
+        .slide-topbar-mark{ font-style:italic; font-weight:900; font-size:1.8rem; }
+        .slide-body{ display:flex; align-items:stretch; gap:22px; padding:22px; flex:1; min-height:0; }
+        .slide-photos{ flex:1.15; display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; gap:14px; min-height:0; }
+        .slide-photo{ border-radius:6px; overflow:hidden; background:#eee; display:flex; align-items:center; justify-content:center; min-height:140px; }
         .slide-photo img{ width:100%; height:100%; object-fit:cover; display:block; }
-        .slide-photo-empty{ color:#999; font-size:.75rem; grid-column: span 2; grid-row: span 2; }
-        .slide-panel{ flex:1; display:flex; flex-direction:column; gap:6px; min-height:0; }
-        .slide-store-bar{ background:#FFC800; color:#111; text-align:center; font-weight:800; padding:.4rem; border-radius:4px; text-decoration:underline; }
-        .slide-brand-bar{ background:#111; color:#FFC800; text-align:center; padding:.5rem; border-radius:4px; font-weight:800; font-size:.8rem; }
-        .slide-called-out{ color:#ddd; font-weight:600; font-size:.72rem; margin-top:.2rem; }
-        .slide-table{ width:100%; height:100%; border-collapse:separate; border-spacing:0 3px; font-size:.78rem; flex:1; }
+        .slide-photo-empty{ color:#999; font-size:1.1rem; grid-column: span 2; grid-row: span 2; }
+        .slide-panel{ flex:1; display:flex; flex-direction:column; gap:10px; min-height:0; }
+        .slide-store-bar{ background:#FFC800; color:#111; text-align:center; font-weight:800; padding:.7rem; border-radius:6px; text-decoration:underline; font-size:1.3rem; }
+        .slide-brand-bar{ background:#111; color:#FFC800; text-align:center; padding:.85rem; border-radius:6px; font-weight:800; font-size:1.25rem; }
+        .slide-called-out{ color:#ddd; font-weight:600; font-size:1rem; margin-top:.3rem; }
+        .slide-table{ width:100%; height:100%; border-collapse:separate; border-spacing:0 5px; font-size:1.15rem; flex:1; }
         .slide-table tr{ height:20%; }
-        .slide-label{ background:#111; color:#FFC800; font-weight:700; padding:.5rem .6rem; width:38%; text-transform:uppercase; font-size:.68rem; letter-spacing:.02em; vertical-align:middle; }
-        .slide-label-tall{ vertical-align:top; padding-top:.6rem; }
-        .slide-table td:last-child{ background:#EFEFEA; padding:.5rem .6rem; vertical-align:middle; }
+        .slide-label{ background:#111; color:#FFC800; font-weight:700; padding:.8rem 1rem; width:38%; text-transform:uppercase; font-size:1rem; letter-spacing:.02em; vertical-align:middle; }
+        .slide-label-tall{ vertical-align:top; padding-top:1rem; }
+        .slide-table td:last-child{ background:#EFEFEA; padding:.8rem 1rem; vertical-align:middle; }
         .slide-details{ vertical-align:top; }
-        .slide-meta{ font-size:.66rem; color:#999; text-align:right; padding:.4rem 1.1rem .8rem; }
-        @media print{ body{ background:#fff; } .toolbar{ display:none; } .slide{ box-shadow:none; margin:0; width:100%; } }
+        .slide-meta{ font-size:.9rem; color:#999; text-align:right; padding:.6rem 1.8rem 1.2rem; flex-shrink:0; }
+        @media print{ body{ background:#fff; } .toolbar{ display:none; } .slide{ box-shadow:none; margin:0; width:45.156cm; height:25.4cm; } }
       </style></head>
       <body>
         <div class="toolbar no-print"><span>Competitor Analysis Report — ${list.length} แบรนด์</span><button onclick="window.print()">พิมพ์ / บันทึกเป็น PDF</button></div>
