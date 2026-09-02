@@ -2447,7 +2447,8 @@ function RetailingProductivityWidget({ ctx }) {
   const [mode, setMode] = useState("menu"); // menu | resume | form | report
   const [test, setTest] = useState(null);
   const [allTests, setAllTests] = useState([]);
-  const [resumeSearch, setResumeSearch] = useState("");
+  const [resumeStoreFilter, setResumeStoreFilter] = useState("ALL");
+  const [resumeDateFilter, setResumeDateFilter] = useState("");
   const [reportStoreFilter, setReportStoreFilter] = useState("ALL");
   const [doInput, setDoInput] = useState("");
   const [activeBoxIndex, setActiveBoxIndex] = useState(null);
@@ -2563,7 +2564,7 @@ function RetailingProductivityWidget({ ctx }) {
     setMode("menu");
   };
 
-  const filteredDrafts = allTests.filter((t) => t.status === "draft" && (!resumeSearch.trim() || (t.code || "").toLowerCase().includes(resumeSearch.trim().toLowerCase()) || (t.doNumbers || []).some((d) => d.toLowerCase().includes(resumeSearch.trim().toLowerCase()))));
+  const filteredDrafts = allTests.filter((t) => t.status === "draft" && (resumeStoreFilter === "ALL" || (t.store || "") === resumeStoreFilter) && (!resumeDateFilter || t.testDate === resumeDateFilter));
 
   return (
     <div>
@@ -2575,12 +2576,27 @@ function RetailingProductivityWidget({ ctx }) {
 
       {mode === "resume" && (
         <div>
-          <input type="text" placeholder="ค้นหาด้วยรหัสทดสอบ หรือหมายเลข DO" value={resumeSearch} onChange={(e) => setResumeSearch(e.target.value)} style={{ marginBottom: ".7rem" }} />
+          <div className="rp-resume-filter">
+            <div>
+              <label className="field-label">เลือกสาขา</label>
+              <select value={resumeStoreFilter} onChange={(e) => setResumeStoreFilter(e.target.value)}>
+                <option value="ALL">ทุกสาขา</option>
+                {ctx.stores.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="field-label">เลือกวันที่ทดสอบ</label>
+              <input type="date" value={resumeDateFilter} onChange={(e) => setResumeDateFilter(e.target.value)} />
+            </div>
+            {(resumeStoreFilter !== "ALL" || resumeDateFilter) && (
+              <button className="btn btn-outline" onClick={() => { setResumeStoreFilter("ALL"); setResumeDateFilter(""); }}>ล้างตัวกรอง</button>
+            )}
+          </div>
           {filteredDrafts.length === 0 ? (
-            <div className="empty-hint">ไม่พบแบบร่าง</div>
+            <div className="empty-hint">ไม่พบแบบร่างที่ตรงกับตัวกรอง</div>
           ) : filteredDrafts.map((t) => (
             <div className="rp-test-row" key={t.id}>
-              <div><b>{t.code}</b> · DO {(t.doNumbers || []).length ? t.doNumbers.join(", ") : "(ไม่ระบุ)"} · {t.testDate} · {t.shipmentType} · {t.boxCount || 0} กล่อง · {(t.stepInstances || []).length} Step</div>
+              <div><b>{t.code}</b> · {t.store || "(ไม่ระบุสาขา)"} · DO {(t.doNumbers || []).length ? t.doNumbers.join(", ") : "(ไม่ระบุ)"} · {t.testDate} · {t.shipmentType} · {t.boxCount || 0} กล่อง · {(t.stepInstances || []).length} Step</div>
               <button className="btn btn-primary" onClick={() => resumeTest(t)}>ทำต่อ</button>
             </div>
           ))}
@@ -2852,8 +2868,8 @@ function storeAbbr(store) {
   if (!store) return "XXX";
   return store.replace(/[^A-Za-z0-9]/g, "").slice(0, 5).toUpperCase() || "XXX";
 }
-const POSITION_LIST = ["PT", "SA", "SSA", "SP", "FM", "ASM", "SM"];
-const MANAGEMENT_POSITIONS = ["FM", "ASM", "SM"]; // always full access, safety net against lockout
+const POSITION_LIST = ["AM", "PT", "SA", "SSA", "SP", "FM", "ASM", "SM"];
+const MANAGEMENT_POSITIONS = ["AM"]; // AM = full access to everything always, incl. YOUR SOURCE — the one safety net against lockout
 const AUTHORITY_KEY = "settings:authority";
 const PAGE_LIST = [
   { key: "move", label: "YOUR MOVE" },
@@ -2868,6 +2884,13 @@ function isAllowedWidget(authority, position, type) {
 function isAllowedPage(authority, position, page) {
   if (page === "build") return true;
   if (!position || MANAGEMENT_POSITIONS.includes(position)) return true;
+  // YOUR SOURCE is AM-only by default — every other position must be explicitly
+  // granted access to it via Authority settings (unlike other pages, which
+  // default to "allowed" until an admin restricts them).
+  if (page === "source") {
+    const cfg = authority[position];
+    return !!(cfg && cfg.pages && cfg.pages.includes("source"));
+  }
   const cfg = authority[position];
   if (!cfg || !cfg.pages) return true;
   return cfg.pages.includes(page);
@@ -3073,6 +3096,8 @@ const GLOBAL_STYLES = `
 
         .rp-menu{ display:flex; gap:.5rem; flex-wrap:wrap; margin-bottom:1rem; }
         .rp-test-row{ display:flex; align-items:center; justify-content:space-between; gap:.6rem; padding:.7rem 0; border-bottom:1px solid #EFEFEA; flex-wrap:wrap; }
+        .rp-resume-filter{ display:flex; align-items:flex-end; gap:.7rem; flex-wrap:wrap; margin-bottom:1rem; }
+        .rp-resume-filter select, .rp-resume-filter input{ width:auto; min-width:160px; }
         .rp-setup{ background:#FCFCFA; border:1px solid var(--line); border-radius:12px; padding:.9rem 1rem; margin-bottom:1rem; }
         .rp-step{ border:1px solid var(--line); border-radius:12px; padding:.9rem 1rem; margin-bottom:.8rem; }
         .rp-step-title{ font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:.92rem; margin-bottom:.6rem; }
@@ -3093,13 +3118,17 @@ const GLOBAL_STYLES = `
         .rp-box-photo-label{ font-size:.68rem; font-weight:700; color:var(--mute); }
         .rp-box-photo-slot .photo-thumb, .rp-box-photo-slot .photo-add{ width:90px; height:90px; }
 
-        .task-alert{ display:flex; align-items:flex-start; gap:.6rem; background:var(--ink); color:var(--yellow); border-radius:14px; padding:.85rem 1rem; margin-bottom:1rem; font-size:.85rem; line-height:1.5; }
+        .task-alert{ display:flex; align-items:flex-start; gap:.6rem; background:var(--ink); color:var(--yellow); border-radius:14px; padding:.85rem 1rem; margin-bottom:1rem; font-size:.85rem; line-height:1.5; border:2px solid var(--yellow); animation:task-blink-border 1.3s ease-in-out infinite; }
         .task-alert-text b{ color:#fff; }
 
+        @keyframes task-blink-border{
+          0%, 100%{ border-color:var(--yellow); box-shadow:0 0 0 0 rgba(255,200,0,.5); }
+          50%{ border-color:#7A5E00; box-shadow:0 0 10px 2px rgba(255,200,0,.55); }
+        }
         .task-list{ display:flex; flex-direction:column; gap:.6rem; }
         .task-card{ display:flex; gap:.6rem; border:1px solid var(--line); border-radius:12px; padding:.7rem .8rem; background:#FCFCFA; }
         .task-card.task-done{ opacity:.6; }
-        .task-card.task-overdue{ border-color:#D4283F; }
+        .task-card:not(.task-done){ border-width:2px; animation:task-blink-border 1.3s ease-in-out infinite; }
         .task-tick input{ width:18px; height:18px; margin-top:.15rem; }
         .task-body{ flex:1; }
         .task-head-row{ display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; margin-bottom:.25rem; }
@@ -3123,7 +3152,7 @@ const GLOBAL_STYLES = `
 
         .ticker-wrap{ background:var(--ink); overflow:hidden; white-space:nowrap; border-bottom:3px solid var(--yellow); }
         .ticker-track{ display:inline-block; padding-left:100%; animation: ticker-scroll 55s linear infinite; }
-        @media (prefers-reduced-motion: reduce){ .ticker-track{ animation:none; padding-left:1rem; } }
+        @media (prefers-reduced-motion: reduce){ .ticker-track{ animation:none; padding-left:1rem; } .task-alert, .task-card:not(.task-done){ animation:none; } }
         @keyframes ticker-scroll{ 0%{ transform:translate3d(0,0,0);} 100%{ transform:translate3d(-100%,0,0);} }
         .ticker-item{ display:inline-flex; align-items:center; gap:.4rem; padding:.5rem 1.4rem; font-family:'JetBrains Mono',monospace; font-size:.78rem; color:#EDEDE8; border-right:1px solid #232323; }
         .ticker-item b{ color:#fff; font-weight:600; }
