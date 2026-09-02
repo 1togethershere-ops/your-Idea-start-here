@@ -313,6 +313,15 @@ function parseNationalityRows(rows) {
   return { records: Array.from(map.values()), error: null };
 }
 
+function exportToExcel(filename, sheetsData) {
+  const wb = XLSX.utils.book_new();
+  sheetsData.forEach(({ name, rows }) => {
+    const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ "ไม่มีข้อมูล": "" }]);
+    XLSX.utils.book_append_sheet(wb, ws, name.slice(0, 31));
+  });
+  XLSX.writeFile(wb, filename);
+}
+
 function mergeByKey(base, incoming, keyFn) {
   const map = new Map(base.map((r) => [keyFn(r), r]));
   for (const r of incoming) map.set(keyFn(r), r);
@@ -1955,6 +1964,14 @@ function CompetitorAnalysisWidget({ ctx, widgetId }) {
             <div className="ca-history-toggle no-print">
               <button className={`chip${filterMode === "all" ? " chip-active" : ""}`} onClick={() => setFilterMode("all")}>ทั้งหมด</button>
               <button className={`chip${filterMode === "current" ? " chip-active" : ""}`} onClick={() => setFilterMode("current")}>สาขา+สัปดาห์นี้</button>
+              <button className="btn btn-outline" onClick={() => {
+                const rows = displayedEntries.map((n) => ({
+                  "แบรนด์": n.brand, "สาขา": n.store, "สัปดาห์": n.weekOf, "Callout": n.callout, "Promotion": n.promotion,
+                  "Period": n.period, "Details": n.details, "Markdown": n.markdown, "Impact KPI": n.impactKpi ? "Yes" : "No",
+                  "บันทึกเมื่อ": new Date(n.savedAt).toLocaleString("th-TH"),
+                }));
+                exportToExcel(`CompetitorAnalysis_${new Date().toISOString().slice(0, 10)}.xlsx`, [{ name: "CompetitorAnalysis", rows }]);
+              }}><FileSpreadsheet size={13} /> Export Excel</button>
             </div>
           </div>
           {displayedEntries.slice(0, 8).map((n) => (
@@ -2318,6 +2335,457 @@ function TaskAlertBanner({ ctx }) {
   );
 }
 
+/* ==================================================================== */
+/* Retailing Productivity — time & motion study for receiving/tagging/    */
+/* displaying/stocking incoming shipments                                */
+/* ==================================================================== */
+const RP_PREFIX = "retailprod:";
+const RP_SHIP_TYPES = ["IBT", "LF"];
+const RP_STEP_DEFS = [
+  {
+    num: 1, title: "สแกนและรับสินค้า",
+    subOptions: ["ยิงรับสินค้า"], allowCustomSub: true,
+    qtyFields: [
+      { key: "footwear", label: "FOOTWEAR" },
+      { key: "app", label: "APP" },
+      { key: "accBag", label: "ACC-BAG" },
+      { key: "accCapSockCrep", label: "ACC-CAP, SOCK, CREP" },
+    ],
+  },
+  {
+    num: 2, title: "ทำป้ายราคาและนำขึ้นโชว์",
+    subOptions: [
+      "ติดสัญญาณตัวโชว์และจัดแสดงตัวอย่าง - รองเท้า",
+      "ติดสัญญาณตัวโชว์และจัดแสดงตัวอย่าง - เสื้อผ้า",
+      "ติดสัญญาณตัวโชว์และจัดแสดงตัวอย่าง - อุปกรณ์",
+    ],
+    allowCustomSub: false,
+    qtyFields: [{ key: "tested", label: "จำนวนทดลอง" }],
+  },
+  {
+    num: 3, title: "เก็บสินค้าในสต๊อกสินค้า",
+    subOptions: [], allowCustomSub: false,
+    qtyFields: [{ key: "amount", label: "จำนวน" }],
+    productTypeOptions: ["FTW", "ACC"],
+  },
+  {
+    num: 4, title: "แขวนเสื้อผ้าและนำขึ้นแขวนหลังบ้าน",
+    subOptions: [], allowCustomSub: false,
+    qtyFields: [],
+  },
+];
+
+function rpBlankTest(code, store) {
+  return {
+    id: "",
+    code,
+    store: store || "",
+    testDate: new Date().toISOString().slice(0, 10),
+    doNumbers: [],
+    boxCount: "",
+    boxPhotos: [],
+    shipmentType: RP_SHIP_TYPES[0],
+    stepInstances: [],
+    status: "draft",
+    createdAt: new Date().toISOString(),
+    submittedAt: null,
+    submittedBy: null,
+  };
+}
+function rpFmtTime(sec) {
+  if (sec === null || sec === undefined) return "--:--";
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+function rpProductBreakdown(tests, storeFilter) {
+  const rows = new Map();
+  tests.forEach((t) => {
+    if (storeFilter !== "ALL" && (t.store || "") !== storeFilter) return;
+    (t.stepInstances || []).forEach((step) => {
+      const def = RP_STEP_DEFS.find((d) => d.num === step.stepNum);
+      if (!def) return;
+      const timeSec = step.elapsedSec || 0;
+      if (!timeSec) return;
+      let entries = [];
+      if (step.stepNum === 1) {
+        entries = [
+          { type: "FOOTWEAR", qty: Number(step.qty.footwear) || 0 },
+          { type: "APP", qty: Number(step.qty.app) || 0 },
+          { type: "ACC-BAG", qty: Number(step.qty.accBag) || 0 },
+          { type: "ACC-CAP,SOCK,CREP", qty: Number(step.qty.accCapSockCrep) || 0 },
+        ].filter((e) => e.qty > 0);
+      } else if (step.stepNum === 2) {
+        const label = step.subSteps.length ? step.subSteps.map((s) => (s.split(" - ")[1] || s).trim()).join(", ") : "ทั่วไป";
+        const qty = Number(step.qty.tested) || 0;
+        if (qty > 0) entries = [{ type: label, qty }];
+      } else if (step.stepNum === 3) {
+        const qty = Number(step.qty.amount) || 0;
+        if (qty > 0 && step.productType) entries = [{ type: step.productType, qty }];
+      }
+      entries.forEach((e) => {
+        const key = `${t.store || "-"}|${step.stepNum}|${e.type}`;
+        if (!rows.has(key)) rows.set(key, { store: t.store || "-", stepNum: step.stepNum, stepTitle: def.title, productType: e.type, qty: 0, timeSec: 0 });
+        const r = rows.get(key);
+        r.qty += e.qty;
+        r.timeSec += timeSec;
+      });
+    });
+  });
+  return Array.from(rows.values())
+    .map((r) => ({ ...r, rate: r.qty > 0 ? r.timeSec / r.qty : null }))
+    .sort((a, b) => a.stepNum - b.stepNum || a.store.localeCompare(b.store));
+}
+
+function rpGenCode(store) {
+  const d = new Date();
+  const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `RP-${storeAbbr(store)}-${ymd}-${rand}`;
+}
+
+function RetailingProductivityWidget({ ctx }) {
+  const [mode, setMode] = useState("menu"); // menu | resume | form | report
+  const [test, setTest] = useState(null);
+  const [allTests, setAllTests] = useState([]);
+  const [resumeSearch, setResumeSearch] = useState("");
+  const [reportStoreFilter, setReportStoreFilter] = useState("ALL");
+  const [doInput, setDoInput] = useState("");
+  const [activeBoxIndex, setActiveBoxIndex] = useState(null);
+  const [, forceTick] = useState(0);
+  const fileRef = useRef(null);
+
+  const load = useCallback(async () => {
+    try {
+      const list = await window.storage.list(RP_PREFIX, true);
+      const keys = list?.keys || [];
+      const out = [];
+      for (const k of keys) { try { const v = await window.storage.get(k, true); if (v?.value) out.push(JSON.parse(v.value)); } catch (e) {} }
+      out.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+      setAllTests(out);
+    } catch (e) {}
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!test) return;
+    const anyRunning = (test.stepInstances || []).some((s) => s.startedAt && !s.stoppedAt);
+    if (!anyRunning) return;
+    const id = setInterval(() => forceTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [test]);
+
+  const persistTest = async (payload, msg) => {
+    try {
+      await window.storage.set(RP_PREFIX + payload.id, JSON.stringify(payload), true);
+      if (msg) ctx.showToast("success", msg);
+      load();
+    } catch (e) { ctx.showToast("error", "บันทึกไม่สำเร็จ"); }
+  };
+
+  const startNew = async () => {
+    const defaultStore = ctx.store !== "ALL" ? ctx.store : (ctx.session?.store || ctx.stores[0] || "");
+    const code = rpGenCode(defaultStore);
+    const id = `rp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const blank = { ...rpBlankTest(code, defaultStore), id };
+    setTest(blank);
+    setMode("form");
+    await persistTest(blank, `สร้างรหัสทดสอบ ${code} แล้ว — จำรหัสนี้ไว้ค้นหา/แก้ไขภายหลังได้`);
+  };
+  const resumeTest = (t) => { setTest(t); setMode("form"); };
+
+  const updateTest = (patch) => setTest((prev) => ({ ...prev, ...patch }));
+  const addStepInstance = (stepNum) => {
+    const instanceId = `${stepNum}_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+    const inst = { instanceId, stepNum, subSteps: [], customSub: "", productType: "", qty: {}, startedAt: null, stoppedAt: null, elapsedSec: null, savedAt: null };
+    setTest((prev) => ({ ...prev, stepInstances: [...(prev.stepInstances || []), inst] }));
+  };
+  const updateStepInstance = (instanceId, patch) => setTest((prev) => ({ ...prev, stepInstances: prev.stepInstances.map((s) => (s.instanceId === instanceId ? { ...s, ...patch } : s)) }));
+  const removeStepInstance = (instanceId) => setTest((prev) => ({ ...prev, stepInstances: prev.stepInstances.filter((s) => s.instanceId !== instanceId) }));
+  const startTimer = (instanceId) => updateStepInstance(instanceId, { startedAt: Date.now(), stoppedAt: null, elapsedSec: null });
+  const stopTimer = (instanceId) => {
+    const step = test.stepInstances.find((s) => s.instanceId === instanceId);
+    if (!step || !step.startedAt) return;
+    updateStepInstance(instanceId, { stoppedAt: Date.now(), elapsedSec: Math.round((Date.now() - step.startedAt) / 1000) });
+  };
+  const liveElapsed = (step) => (step.startedAt && !step.stoppedAt ? Math.floor((Date.now() - step.startedAt) / 1000) : step.elapsedSec);
+
+  const saveStepInstance = async (instanceId) => {
+    const updated = { ...test, stepInstances: test.stepInstances.map((s) => (s.instanceId === instanceId ? { ...s, savedAt: new Date().toISOString() } : s)) };
+    setTest(updated);
+    await persistTest(updated, "บันทึกขั้นตอนนี้แล้ว");
+  };
+  const saveSetup = async () => { await persistTest(test, "บันทึกข้อมูลตั้งต้นแล้ว"); };
+
+  const addDoNumber = () => {
+    if (!doInput.trim()) return;
+    setTest((prev) => ({ ...prev, doNumbers: [...(prev.doNumbers || []), doInput.trim()] }));
+    setDoInput("");
+  };
+  const removeDoNumber = (i) => setTest((prev) => ({ ...prev, doNumbers: prev.doNumbers.filter((_, idx) => idx !== i) }));
+
+  const setBoxCount = (val) => {
+    const n = Math.max(0, parseInt(val, 10) || 0);
+    setTest((prev) => {
+      const photos = [...(prev.boxPhotos || [])];
+      while (photos.length < n) photos.push(null);
+      if (photos.length > n) photos.length = n;
+      return { ...prev, boxCount: val, boxPhotos: photos };
+    });
+  };
+  const openBoxPhotoPicker = (i) => { setActiveBoxIndex(i); fileRef.current?.click(); };
+  const handleBoxPhoto = (file) => {
+    if (!file || activeBoxIndex === null) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        const scale = Math.min(1, 480 / img.width);
+        canvas.width = img.width * scale; canvas.height = img.height * scale;
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+        setTest((prev) => {
+          const photos = [...(prev.boxPhotos || [])];
+          photos[activeBoxIndex] = dataUrl;
+          return { ...prev, boxPhotos: photos };
+        });
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+  const removeBoxPhoto = (i) => setTest((prev) => { const photos = [...(prev.boxPhotos || [])]; photos[i] = null; return { ...prev, boxPhotos: photos }; });
+
+  const finalSubmit = async () => {
+    const payload = { ...test, status: "submitted", submittedAt: new Date().toISOString(), submittedBy: ctx.session?.nickname || "-" };
+    setTest(payload);
+    await persistTest(payload, "ส่งข้อมูลแล้ว");
+    setMode("menu");
+  };
+
+  const filteredDrafts = allTests.filter((t) => t.status === "draft" && (!resumeSearch.trim() || (t.code || "").toLowerCase().includes(resumeSearch.trim().toLowerCase()) || (t.doNumbers || []).some((d) => d.toLowerCase().includes(resumeSearch.trim().toLowerCase()))));
+
+  return (
+    <div>
+      <div className="rp-menu no-print">
+        <button className="btn btn-primary" onClick={startNew}><Plus size={14} /> เพิ่มการทดสอบ</button>
+        <button className="btn btn-outline" onClick={() => setMode("resume")}><History size={14} /> เรียกการทดสอบเพื่อทำต่อ</button>
+        <button className="btn btn-outline" onClick={() => setMode("report")}><FileSpreadsheet size={14} /> แสดงผล</button>
+      </div>
+
+      {mode === "resume" && (
+        <div>
+          <input type="text" placeholder="ค้นหาด้วยรหัสทดสอบ หรือหมายเลข DO" value={resumeSearch} onChange={(e) => setResumeSearch(e.target.value)} style={{ marginBottom: ".7rem" }} />
+          {filteredDrafts.length === 0 ? (
+            <div className="empty-hint">ไม่พบแบบร่าง</div>
+          ) : filteredDrafts.map((t) => (
+            <div className="rp-test-row" key={t.id}>
+              <div><b>{t.code}</b> · DO {(t.doNumbers || []).length ? t.doNumbers.join(", ") : "(ไม่ระบุ)"} · {t.testDate} · {t.shipmentType} · {t.boxCount || 0} กล่อง · {(t.stepInstances || []).length} Step</div>
+              <button className="btn btn-primary" onClick={() => resumeTest(t)}>ทำต่อ</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {mode === "report" && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: ".6rem", flexWrap: "wrap", marginBottom: "1rem" }}>
+            <div>
+              <label className="field-label" style={{ margin: 0 }}>Filter สาขา</label>
+              <select value={reportStoreFilter} onChange={(e) => setReportStoreFilter(e.target.value)} style={{ maxWidth: 260 }}>
+                <option value="ALL">ทุกสาขา</option>
+                {ctx.stores.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <button className="btn btn-outline no-print" onClick={() => {
+              const submitted = allTests.filter((t) => t.status === "submitted" && (reportStoreFilter === "ALL" || (t.store || "") === reportStoreFilter));
+              const testRows = submitted.map((t) => ({
+                "รหัสทดสอบ": t.code, "สาขา": t.store || "-", "DO": (t.doNumbers || []).join(", "), "วันที่": t.testDate,
+                "รูปแบบ": t.shipmentType, "กล่อง": t.boxCount, "จำนวน Step": (t.stepInstances || []).length,
+                "เวลารวม (วินาที)": (t.stepInstances || []).reduce((s, st) => s + (st.elapsedSec || 0), 0), "ผู้ส่ง": t.submittedBy,
+              }));
+              const breakdownRows = rpProductBreakdown(submitted, "ALL").map((r) => ({
+                "สาขา": r.store, "Step": `Step ${r.stepNum} — ${r.stepTitle}`, "ประเภทสินค้าที่ทดสอบ": r.productType,
+                "จำนวนชิ้น": r.qty, "เวลาที่ใช้ (วินาที)": r.timeSec.toFixed(0), "ผลลัพธ์ (วิ/ชิ้น)": r.rate !== null ? r.rate.toFixed(1) : "",
+              }));
+              exportToExcel(`RetailingProductivity_${new Date().toISOString().slice(0, 10)}.xlsx`, [{ name: "รายการทดสอบ", rows: testRows }, { name: "สรุปผลลัพธ์", rows: breakdownRows }]);
+            }}><FileSpreadsheet size={14} /> Export เป็น Excel</button>
+          </div>
+
+          <div className="panel-title">สรุปรายการทดสอบ</div>
+          <table className="data-table" style={{ marginBottom: "1.2rem" }}>
+            <thead><tr><th>รหัสทดสอบ</th><th>สาขา</th><th>DO</th><th>วันที่</th><th>รูปแบบ</th><th className="num">กล่อง</th><th className="num">จำนวน Step</th><th className="num">เวลารวม</th><th>ผู้ส่ง</th></tr></thead>
+            <tbody>
+              {allTests.filter((t) => t.status === "submitted" && (reportStoreFilter === "ALL" || (t.store || "") === reportStoreFilter)).map((t) => {
+                const total = (t.stepInstances || []).reduce((s, st) => s + (st.elapsedSec || 0), 0);
+                return (
+                  <tr key={t.id}>
+                    <td>{t.code}</td><td>{t.store || "-"}</td><td>{(t.doNumbers || []).join(", ")}</td><td>{t.testDate}</td><td>{t.shipmentType}</td><td className="num">{t.boxCount}</td>
+                    <td className="num">{(t.stepInstances || []).length}</td>
+                    <td className="num">{rpFmtTime(total)}</td>
+                    <td>{t.submittedBy}</td>
+                  </tr>
+                );
+              })}
+              {allTests.filter((t) => t.status === "submitted" && (reportStoreFilter === "ALL" || (t.store || "") === reportStoreFilter)).length === 0 && <tr><td colSpan={9} className="empty-hint">ยังไม่มีการทดสอบที่ส่งข้อมูลแล้ว</td></tr>}
+            </tbody>
+          </table>
+
+          <div className="panel-title">สรุปผลลัพธ์ตามประเภทสินค้า / Step</div>
+          <table className="data-table">
+            <thead><tr><th>สาขา</th><th>Step</th><th>ประเภทสินค้าที่ทดสอบ</th><th className="num">จำนวนชิ้น</th><th className="num">เวลาที่ใช้ (วินาที)</th><th className="num">ผลลัพธ์</th></tr></thead>
+            <tbody>
+              {rpProductBreakdown(allTests.filter((t) => t.status === "submitted"), reportStoreFilter).map((r, i) => (
+                <tr key={i}>
+                  <td>{r.store}</td>
+                  <td>Step {r.stepNum} — {r.stepTitle}</td>
+                  <td>{r.productType}</td>
+                  <td className="num">{num(r.qty)}</td>
+                  <td className="num">{r.timeSec.toFixed(0)}</td>
+                  <td className="num">{r.rate !== null ? `1 : ${r.rate.toFixed(1)} วิ/ชิ้น` : "-"}</td>
+                </tr>
+              ))}
+              {rpProductBreakdown(allTests.filter((t) => t.status === "submitted"), reportStoreFilter).length === 0 && <tr><td colSpan={6} className="empty-hint">ยังไม่มีข้อมูลผลลัพธ์ตามประเภทสินค้า</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {mode === "form" && test && (
+        <div>
+          <div className="rp-code-banner">
+            <div className="rp-code-label">รหัสทดสอบ (Test Code) — ใช้ค้นหา/แก้ไขภายหลัง</div>
+            <div className="rp-code-value">{test.code}</div>
+          </div>
+
+          <div className="rp-setup">
+            <label className="field-label">สาขา</label>
+            <select value={test.store || ""} onChange={(e) => updateTest({ store: e.target.value })}>
+              <option value="">(ไม่ระบุ)</option>
+              {ctx.stores.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <label className="field-label">วันที่ทดสอบ</label>
+            <input type="date" value={test.testDate} onChange={(e) => updateTest({ testDate: e.target.value })} />
+
+            <label className="field-label">ระบุหมายเลข DO ที่จะทำการทดสอบ (เพิ่มได้หลายหมายเลข)</label>
+            <div className="task-step-input-row">
+              <input type="text" value={doInput} onChange={(e) => setDoInput(e.target.value)} placeholder="เช่น DO-20260901-001" onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addDoNumber(); } }} />
+              <button className="btn btn-outline" onClick={addDoNumber}><Plus size={13} /> เพิ่ม DO</button>
+            </div>
+            {(test.doNumbers || []).length > 0 && (
+              <ol className="task-steps task-steps-form">
+                {test.doNumbers.map((d, i) => (
+                  <li key={i}>{d} <button className="task-step-remove" onClick={() => removeDoNumber(i)}><X size={11} /></button></li>
+                ))}
+              </ol>
+            )}
+
+            <label className="field-label">เลือกรูปแบบการส่งสินค้า</label>
+            <select value={test.shipmentType} onChange={(e) => updateTest({ shipmentType: e.target.value })}>
+              {RP_SHIP_TYPES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <label className="field-label">ระบุจำนวนกล่องที่ทดสอบ</label>
+            <input type="number" value={test.boxCount} onChange={(e) => setBoxCount(e.target.value)} />
+
+            {Number(test.boxCount) > 0 && (
+              <>
+                <label className="field-label">ถ่ายรูปฉลากแต่ละกล่อง</label>
+                <div className="rp-box-photo-grid">
+                  {(test.boxPhotos || []).map((photo, i) => (
+                    <div className="rp-box-photo-slot" key={i}>
+                      <div className="rp-box-photo-label">กล่องที่ {i + 1}</div>
+                      {photo ? (
+                        <div className="photo-thumb"><img src={photo} alt="" /><button className="photo-remove no-print" onClick={() => removeBoxPhoto(i)}><X size={12} /></button></div>
+                      ) : (
+                        <button className="photo-add no-print" onClick={() => openBoxPhotoPicker(i)}><Camera size={18} /><span>ถ่ายรูป</span></button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+            <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => { handleBoxPhoto(e.target.files[0]); e.target.value = ""; }} />
+
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: ".6rem" }}>
+              <button className="btn btn-outline no-print" onClick={saveSetup}><Save size={13} /> บันทึกข้อมูลตั้งต้น</button>
+            </div>
+          </div>
+
+          <div className="rp-step-buttons no-print">
+            {RP_STEP_DEFS.map((def) => (
+              <button key={def.num} className="btn btn-outline" onClick={() => addStepInstance(def.num)}>+ Step {def.num}: {def.title}</button>
+            ))}
+          </div>
+
+          {(test.stepInstances || []).length === 0 && <div className="empty-hint">ยังไม่มี Step ที่เพิ่ม — กดปุ่มด้านบนเพื่อเริ่มจับเวลา (เพิ่ม Step เดิมซ้ำได้ไม่จำกัดครั้ง)</div>}
+
+          {(test.stepInstances || []).map((step, idx) => {
+            const def = RP_STEP_DEFS.find((d) => d.num === step.stepNum);
+            const running = !!(step.startedAt && !step.stoppedAt);
+            const repIndex = test.stepInstances.slice(0, idx).filter((s) => s.stepNum === step.stepNum).length;
+            return (
+              <div className="rp-step" key={step.instanceId}>
+                <div className="rp-step-title-row">
+                  <div className="rp-step-title">Step {step.stepNum} — {def.title}{repIndex > 0 && <span className="rp-step-rep"> (ครั้งที่ {repIndex + 1})</span>}</div>
+                  <button className="task-step-remove no-print" onClick={() => removeStepInstance(step.instanceId)} title="ลบ Step นี้"><X size={13} /></button>
+                </div>
+                {def.subOptions.length > 0 && (
+                  <div className="rp-substep-list">
+                    {def.subOptions.map((opt) => (
+                      <label key={opt} className="authority-check">
+                        <input type="checkbox" checked={step.subSteps.includes(opt)} onChange={() => {
+                          const next = step.subSteps.includes(opt) ? step.subSteps.filter((s) => s !== opt) : [...step.subSteps, opt];
+                          updateStepInstance(step.instanceId, { subSteps: next });
+                        }} /> {opt}
+                      </label>
+                    ))}
+                    {def.allowCustomSub && (
+                      <input type="text" placeholder="เพิ่มขั้นตอนอื่นระบุ" value={step.customSub || ""} onChange={(e) => updateStepInstance(step.instanceId, { customSub: e.target.value })} style={{ maxWidth: 220 }} />
+                    )}
+                  </div>
+                )}
+                {def.productTypeOptions && (
+                  <div className="rp-substep-list">
+                    {def.productTypeOptions.map((opt) => (
+                      <label key={opt} className="authority-check">
+                        <input type="radio" name={`rp-pt-${step.instanceId}`} checked={step.productType === opt} onChange={() => updateStepInstance(step.instanceId, { productType: opt })} /> {opt}
+                      </label>
+                    ))}
+                  </div>
+                )}
+                {def.qtyFields.length > 0 && (
+                  <div className="rp-qty-grid">
+                    {def.qtyFields.map((qf) => (
+                      <div key={qf.key}>
+                        <label className="field-label">{qf.label}</label>
+                        <input type="number" value={step.qty[qf.key] || ""} onChange={(e) => updateStepInstance(step.instanceId, { qty: { ...step.qty, [qf.key]: e.target.value } })} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="rp-timer-row no-print">
+                  {!running ? (
+                    <button className="btn btn-primary" onClick={() => startTimer(step.instanceId)}>▶ เริ่มจับเวลา</button>
+                  ) : (
+                    <button className="btn btn-outline rp-stop" onClick={() => stopTimer(step.instanceId)}>■ หยุด</button>
+                  )}
+                  <div className="rp-timer-display">{rpFmtTime(liveElapsed(step))}</div>
+                  <button className="btn btn-outline" onClick={() => saveStepInstance(step.instanceId)}><Save size={13} /> บันทึก Step นี้</button>
+                  {step.savedAt && <span className="badge badge-pos">บันทึกแล้ว</span>}
+                </div>
+              </div>
+            );
+          })}
+
+          <div style={{ display: "flex", gap: ".5rem", justifyContent: "flex-end", marginTop: "1rem" }}>
+            <button className="btn btn-primary no-print" onClick={finalSubmit}><CheckCircle2 size={14} /> บันทึกและส่งข้อมูลทั้งหมด</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const WIDGET_DEFS = {
   reflection: { title: "สรุปวันนี้ (สำเร็จ/ไม่สำเร็จ)", icon: <Smile size={15} />, category: "ภาพรวม", Comp: ({ ctx }) => <ReflectionBar ctx={ctx} /> },
   achievements: { title: "Achievement Badges", icon: <Trophy size={15} />, category: "ภาพรวม", Comp: ({ ctx }) => <AchievementBadges ctx={ctx} /> },
@@ -2335,6 +2803,7 @@ const WIDGET_DEFS = {
   perfectbillapp: { title: "Perfect Bill APP", icon: <TargetIcon size={15} />, multi: true, category: "เป้าหมาย", Comp: (p) => <PerfectBillWidget {...p} category="APP" /> },
   perfectbillacc: { title: "Perfect Bill ACC", icon: <TargetIcon size={15} />, multi: true, category: "เป้าหมาย", Comp: (p) => <PerfectBillWidget {...p} category="ACC" /> },
   hourlyreport: { title: "Hourly Report", icon: <ClipboardList size={15} />, multi: true, category: "เป้าหมาย", Comp: HourlyReportWidget },
+  retailprod: { title: "Retailing Productivity", icon: <Zap size={15} />, multi: true, category: "เป้าหมาย", Comp: RetailingProductivityWidget },
   mallevent: { title: "Mall Event", icon: <Sparkles size={15} />, multi: true, category: "บันทึกหน้าร้าน", Comp: MallEventWidget },
   situation: { title: "สถานการณ์ร้านวันนี้", icon: <ClipboardList size={15} />, multi: true, category: "บันทึกหน้าร้าน", Comp: ({ ctx, widgetId }) => <TextNoteWidget ctx={ctx} storagePrefix={widgetId} placeholder="สรุปสถานการณ์ร้านวันนี้..." historyTitle="ประวัติสถานการณ์ร้าน" /> },
   competitor: { title: "Competitor Analysis", icon: <Trophy size={15} />, multi: true, category: "บันทึกหน้าร้าน", Comp: CompetitorAnalysisWidget },
@@ -2361,6 +2830,28 @@ const STORE_LIST = [
   "CENTRAL PLAZA WESTGATE", "TERMINAL 21 PATTAYA", "CENTRAL RAMA 2",
   "CENTRAL EASTVILLE", "CENTRAL PINKLAO", "CENTRAL PARK DUSIT",
 ];
+const STORE_ABBR = {
+  "ICON SIAM": "ICONS",
+  "MEGA BANGNA": "MEGAB",
+  "TERMINAL 21": "TML21",
+  "SIAM CENTER": "SIAMC",
+  "THE MALL NGAMWONGWAN": "TMNGW",
+  "FASHION ISLAND": "FASHI",
+  "FUTURE PARK": "FPARK",
+  "THE MALL BANGKAE": "TMBKE",
+  "CENTRAL RAMA 9": "RAMA9",
+  "CENTRAL PLAZA WESTGATE": "WSTGT",
+  "TERMINAL 21 PATTAYA": "T21PT",
+  "CENTRAL RAMA 2": "RAMA2",
+  "CENTRAL EASTVILLE": "EASTV",
+  "CENTRAL PINKLAO": "PINKL",
+  "CENTRAL PARK DUSIT": "DUSIT",
+};
+function storeAbbr(store) {
+  if (STORE_ABBR[store]) return STORE_ABBR[store];
+  if (!store) return "XXX";
+  return store.replace(/[^A-Za-z0-9]/g, "").slice(0, 5).toUpperCase() || "XXX";
+}
 const POSITION_LIST = ["PT", "SA", "SSA", "SP", "FM", "ASM", "SM"];
 const MANAGEMENT_POSITIONS = ["FM", "ASM", "SM"]; // always full access, safety net against lockout
 const AUTHORITY_KEY = "settings:authority";
@@ -2579,6 +3070,28 @@ const GLOBAL_STYLES = `
         .authority-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:.5rem; }
         .authority-check{ display:flex; align-items:center; gap:.4rem; font-size:.82rem; background:#FCFCFA; border:1px solid var(--line); border-radius:8px; padding:.45rem .6rem; }
         .authority-widgets-head{ display:flex; justify-content:space-between; align-items:center; }
+
+        .rp-menu{ display:flex; gap:.5rem; flex-wrap:wrap; margin-bottom:1rem; }
+        .rp-test-row{ display:flex; align-items:center; justify-content:space-between; gap:.6rem; padding:.7rem 0; border-bottom:1px solid #EFEFEA; flex-wrap:wrap; }
+        .rp-setup{ background:#FCFCFA; border:1px solid var(--line); border-radius:12px; padding:.9rem 1rem; margin-bottom:1rem; }
+        .rp-step{ border:1px solid var(--line); border-radius:12px; padding:.9rem 1rem; margin-bottom:.8rem; }
+        .rp-step-title{ font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:.92rem; margin-bottom:.6rem; }
+        .rp-substep-list{ display:flex; flex-wrap:wrap; gap:.4rem; margin-bottom:.7rem; }
+        .rp-qty-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:.6rem; margin-bottom:.7rem; }
+        .rp-timer-row{ display:flex; align-items:center; gap:.8rem; }
+        .rp-timer-display{ font-family:'JetBrains Mono',monospace; font-weight:800; font-size:1.3rem; color:var(--ink); background:var(--yellow); padding:.3rem .8rem; border-radius:8px; }
+        .rp-stop{ background:#D4283F; color:#fff; border-color:#D4283F; }
+        .rp-stop:hover{ background:#B3202F; }
+        .rp-code-banner{ background:var(--ink); border-radius:12px; padding:.8rem 1rem; margin-bottom:.9rem; text-align:center; }
+        .rp-code-label{ font-size:.68rem; color:#C9C9C0; font-weight:700; text-transform:uppercase; letter-spacing:.04em; margin-bottom:.3rem; }
+        .rp-code-value{ font-family:'JetBrains Mono',monospace; font-weight:800; font-size:1.3rem; color:var(--yellow); letter-spacing:.03em; }
+        .rp-step-buttons{ display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:.9rem; }
+        .rp-step-title-row{ display:flex; align-items:center; justify-content:space-between; margin-bottom:.6rem; }
+        .rp-step-rep{ font-weight:600; color:var(--mute); font-size:.8rem; }
+        .rp-box-photo-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(90px,1fr)); gap:.6rem; }
+        .rp-box-photo-slot{ display:flex; flex-direction:column; align-items:center; gap:.3rem; }
+        .rp-box-photo-label{ font-size:.68rem; font-weight:700; color:var(--mute); }
+        .rp-box-photo-slot .photo-thumb, .rp-box-photo-slot .photo-add{ width:90px; height:90px; }
 
         .task-alert{ display:flex; align-items:flex-start; gap:.6rem; background:var(--ink); color:var(--yellow); border-radius:14px; padding:.85rem 1rem; margin-bottom:1rem; font-size:.85rem; line-height:1.5; }
         .task-alert-text b{ color:#fff; }
@@ -3378,7 +3891,7 @@ function Dashboard({ session, onLogout }) {
               const def = WIDGET_DEFS[type];
               if (!def) return null;
               const Comp = def.Comp;
-              const span2 = type === "sku" || type === "breakdown" || type === "overview" || type === "perfectbillftw" || type === "perfectbillapp" || type === "perfectbillacc" || type === "hourlyreport" || type === "competitor" || type === "vatrefund" || type === "document" || type === "reflection" || type === "achievements" || type === "kpi";
+              const span2 = type === "sku" || type === "breakdown" || type === "overview" || type === "perfectbillftw" || type === "perfectbillapp" || type === "perfectbillacc" || type === "hourlyreport" || type === "competitor" || type === "vatrefund" || type === "document" || type === "reflection" || type === "achievements" || type === "kpi" || type === "retailprod";
               const sameType = visibleWidgets.filter((w) => widgetType(w) === type);
               const title = sameType.length > 1 ? `${def.title} #${sameType.indexOf(id) + 1}` : def.title;
               return (
@@ -3749,7 +4262,16 @@ function TaskManagerAdmin({ tasks, saveTask, deleteTask, stores }) {
 
   return (
     <div className="mapping-card" style={{ marginTop: "1rem" }}>
-      <div className="panel-title"><CheckCircle2 size={13} /> จัดการ Tasks (สำหรับแอดมิน)</div>
+      <div className="panel-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span><CheckCircle2 size={13} /> จัดการ Tasks (สำหรับแอดมิน)</span>
+        <button className="btn btn-outline no-print" onClick={() => {
+          const rows = sorted.map((t) => ({
+            "Topics": t.topics, "To Store": t.toStore === "ALL" ? "ทุกสาขา" : t.toStore, "Assigned To": t.assignedTo && t.assignedTo !== "ALL" ? t.assignedTo : "ทุกคน",
+            "Assign Date": t.assignDate, "Deadline": t.deadline, "Completed": t.completed ? "Yes" : "No", "Linked Widget": t.linkedWidget || "", "Steps": (t.steps || []).join(" | "),
+          }));
+          exportToExcel(`Tasks_${new Date().toISOString().slice(0, 10)}.xlsx`, [{ name: "Tasks", rows }]);
+        }}><FileSpreadsheet size={13} /> Export Excel</button>
+      </div>
       <div className="mapping-cols">สร้างงานมอบหมายให้สาขา หรือพนักงานคนใดคนหนึ่งโดยเฉพาะ — พนักงานจะเห็นเป็น Alert ที่หน้า YOUR BUILD และดูรายละเอียด/ติ๊กเสร็จได้ที่ Widget "Tasks"</div>
 
       <div className="task-form-grid">
