@@ -4265,7 +4265,11 @@ function Dashboard({ session, onLogout }) {
     const file = files[0];
     try {
       const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array", cellDates: true });
+      const wb = XLSX.read(buf, { type: "array" }); // NOTE: no cellDates here on purpose — with it on, SheetJS
+      // returns JS Date objects whose calendar day can shift by one depending on the
+      // browser's local timezone (this caused the "date off by one / bill missing" bug).
+      // Keeping dates as raw Excel serial numbers and converting them ourselves with
+      // pure UTC day-count math (see rwCellToISODate) is timezone-proof.
       const { leadership, transactions, periodLabel } = rwParseWorkbook(wb);
       if (leadership.length === 0 && transactions.length === 0) {
         showToast("error", "หาคอลัมน์ที่ต้องการในไฟล์ไม่เจอ (Store Code/Employee/Job Title หรือ Store/Brand/Sales Date/SKU Code) — เช็คว่าแท็บ/หัวคอลัมน์ในไฟล์ตรงกับที่ระบบคาดไว้ไหม");
