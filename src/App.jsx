@@ -490,6 +490,22 @@ function skuImageUrl(prodCode) {
   if (!prodCode) return null;
   return `https://i1.adis.ws/i/jpl/jd_${prodCode}_a`;
 }
+async function srImageToDataURL(url) {
+  if (!url) return null;
+  try {
+    const res = await fetch(url, { mode: "cors" });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch (e) {
+    return null; // CORS-blocked or not found — the PDF card just shows a blank placeholder box instead
+  }
+}
 
 const _loadedScripts = {};
 function loadScriptOnce(src) {
@@ -3459,35 +3475,93 @@ function CartonLabelPanel({ ctx }) {
     try {
       await loadScriptOnce("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
       const { jsPDF } = window.jspdf;
-      const doc = new jsPDF({ unit: "mm", format: "a4" });
-      boxes.forEach((box, i) => {
-        if (i > 0) doc.addPage();
-        doc.setFontSize(18); doc.setFont(undefined, "bold");
-        doc.text("CARTON LABEL", 105, 20, { align: "center" });
-        doc.setFontSize(11); doc.setFont(undefined, "normal");
-        doc.text(`Initial ID: ${box.initialId || "-"}`, 15, 32);
-        doc.text(`สาขา: ${box.store === "ALL" ? "-" : box.store}`, 15, 39);
-        doc.setFontSize(14); doc.setFont(undefined, "bold");
-        doc.text(`กล่องที่: ${box.boxNumber}`, 15, 50);
-        doc.setFontSize(11); doc.setFont(undefined, "normal");
-        doc.text(`จำนวน Article: ${box.articleCount}`, 15, 57);
-        let y = 68;
-        doc.setFont(undefined, "bold");
-        doc.text("#", 15, y); doc.text("รหัสสินค้า (Prod Code)", 30, y); doc.text("แบรนด์", 100, y); doc.text("ประเภท (Level 4)", 140, y);
+      const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "landscape" }); // 297 x 210mm
+      const PAGE_W = 297, PAGE_H = 210;
+
+      // Pre-load every article's product photo once (best-effort — falls back to a
+      // blank placeholder box if the image can't be fetched, e.g. CORS or 404).
+      const allArticles = boxes.flatMap((b) => b.articles);
+      const imgCache = new Map();
+      for (const a of allArticles) {
+        if (!a.code || imgCache.has(a.code)) continue;
+        imgCache.set(a.code, await srImageToDataURL(skuImageUrl(a.code)));
+      }
+
+      const drawCard = (x, y, w, h, a) => {
+        const photoH = h * 0.62;
+        doc.setDrawColor(180); doc.setFillColor(240, 240, 238);
+        doc.rect(x, y, w, photoH, "FD");
+        const dataUrl = a.code ? imgCache.get(a.code) : null;
+        if (dataUrl) {
+          try {
+            const pad = 4;
+            doc.addImage(dataUrl, "JPEG", x + pad, y + pad, w - pad * 2, photoH - pad * 2, undefined, "FAST");
+          } catch (e) {}
+        }
+        let ry = y + photoH;
+        const rowH = (h - photoH) / 3;
+        doc.setDrawColor(0);
+        // Brand row
+        doc.rect(x, ry, w, rowH);
+        doc.setFont(undefined, "bold"); doc.setFontSize(12); doc.setTextColor(0);
+        doc.text(String(a.brand || "-").toUpperCase(), x + w / 2, ry + rowH / 2 + 1.5, { align: "center" });
+        ry += rowH;
+        // Category (Level 4) row
+        doc.rect(x, ry, w, rowH);
+        doc.text(String(a.level4 || "-").toUpperCase(), x + w / 2, ry + rowH / 2 + 1.5, { align: "center" });
+        ry += rowH;
+        // Code row — yellow highlight
+        doc.setFillColor(255, 216, 0);
+        doc.rect(x, ry, w, rowH, "F");
+        doc.rect(x, ry, w, rowH);
+        doc.text(String(a.code || "-").toUpperCase(), x + w / 2, ry + rowH / 2 + 1.5, { align: "center" });
         doc.setFont(undefined, "normal");
-        y += 6;
-        box.articles.forEach((a, idx) => {
-          if (y > 280) { doc.addPage(); y = 20; }
-          doc.text(String(idx + 1), 15, y);
-          doc.text(String(a.code || "-").slice(0, 24), 30, y);
-          doc.text(String(a.brand || "-").slice(0, 18), 100, y);
-          doc.text(String(a.level4 || "-").slice(0, 24), 140, y);
-          y += 6;
-        });
-        doc.setFontSize(8); doc.setTextColor(150);
-        doc.text(`บันทึกโดย ${box.savedBy} · ${new Date(box.savedAt).toLocaleString("th-TH")}`, 15, 290);
-        doc.setTextColor(0);
-      });
+      };
+
+      const MARGIN = 12;
+      const layoutFor = (count) => {
+        const areaW = PAGE_W - MARGIN * 2, areaH = PAGE_H - MARGIN * 2 - 14; // reserve header space
+        const gap = 8;
+        if (count === 1) {
+          const w = 110, h = areaH;
+          return [{ x: (PAGE_W - w) / 2, y: MARGIN + 14, w, h }];
+        }
+        if (count === 2) {
+          const w = (areaW - gap) / 2, h = areaH;
+          return [0, 1].map((i) => ({ x: MARGIN + i * (w + gap), y: MARGIN + 14, w, h }));
+        }
+        if (count === 3) {
+          const w = (areaW - gap) / 2, h = (areaH - gap) / 2;
+          return [
+            { x: MARGIN, y: MARGIN + 14, w, h },
+            { x: MARGIN + w + gap, y: MARGIN + 14, w, h },
+            { x: MARGIN + (areaW - w) / 2, y: MARGIN + 14 + h + gap, w, h },
+          ];
+        }
+        // 4
+        const w = (areaW - gap) / 2, h = (areaH - gap) / 2;
+        return [
+          { x: MARGIN, y: MARGIN + 14, w, h },
+          { x: MARGIN + w + gap, y: MARGIN + 14, w, h },
+          { x: MARGIN, y: MARGIN + 14 + h + gap, w, h },
+          { x: MARGIN + w + gap, y: MARGIN + 14 + h + gap, w, h },
+        ];
+      };
+
+      let firstPage = true;
+      for (const box of boxes) {
+        // Split into groups of at most 4 articles — one of the 4 fixed templates per page.
+        for (let i = 0; i < box.articles.length; i += 4) {
+          const chunk = box.articles.slice(i, i + 4);
+          if (!firstPage) doc.addPage();
+          firstPage = false;
+          doc.setFontSize(11); doc.setFont(undefined, "normal"); doc.setTextColor(90);
+          doc.text(`Initial ID: ${box.initialId || "-"}  ·  กล่องที่ ${box.boxNumber}  ·  สาขา: ${box.store === "ALL" ? "-" : box.store}`, MARGIN, MARGIN + 4);
+          doc.setTextColor(0);
+          const slots = layoutFor(chunk.length);
+          chunk.forEach((a, idx) => drawCard(slots[idx].x, slots[idx].y, slots[idx].w, slots[idx].h, a));
+        }
+      }
       doc.save(`CartonLabel_${initialId || "batch"}.pdf`);
       ctx.showToast("success", `สร้างใบปะหน้าสำเร็จ (${boxes.length} กล่อง)`);
     } catch (e) { ctx.showToast("error", "สร้าง PDF ไม่สำเร็จ: " + e.message); }
