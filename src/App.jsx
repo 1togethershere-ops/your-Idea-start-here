@@ -10,7 +10,7 @@ import {
   AlertCircle, CheckCircle2, Calendar, FileSpreadsheet, X, History, Sparkles,
   Plus, Image as ImageIcon, Users2, Tag, Percent, CreditCard, Target as TargetIcon,
   Smile, Frown, Camera, Footprints, ChevronDown, SlidersHorizontal, ClipboardList,
-  Trophy, Flame, Star, Zap, Medal, Plane, FileText, Lock,
+  Trophy, Flame, Star, Zap, Medal, Plane, FileText, Lock, Search,
 } from "lucide-react";
 
 /* ==================================================================== */
@@ -459,6 +459,48 @@ function rwAsicsIncentive(transactions, rate) {
 }
 
 const RW_CHUNK_SIZE = 1500; // keep each saved piece small/reliable regardless of total dataset size
+function skuParseWorkbook(wb) {
+  // Simplified on purpose: the source file only reliably has Prod Code (column C)
+  // and Level 4 (column W) that we need — every other column is ignored.
+  const records = [];
+  const seen = new Set();
+  for (const sheetName of wb.SheetNames) {
+    const sheet = wb.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: false });
+    const hIdx = rwFindHeaderRow(rows, ["Prod Code"]);
+    if (hIdx === -1) continue;
+    const header = rows[hIdx].map((c) => String(c || "").trim());
+    const col = (names) => rwFindColFlexible(header, names);
+    const c = { prodCode: col(["Prod Code"]), level4: col(["Level 4"]) };
+    for (let i = hIdx + 1; i < rows.length; i++) {
+      const row = rows[i] || [];
+      const prodCode = String(row[c.prodCode] || "").trim();
+      if (!prodCode || seen.has(prodCode.toUpperCase())) continue;
+      seen.add(prodCode.toUpperCase());
+      records.push({ prodCode, level4: String(row[c.level4] || "").trim() });
+    }
+  }
+  return records;
+}
+function skuLookupCode(skuLookup, code) {
+  const c = String(code || "").trim().toUpperCase();
+  if (!c) return null;
+  return skuLookup.find((r) => r.prodCode.toUpperCase() === c) || null;
+}
+
+const _loadedScripts = {};
+function loadScriptOnce(src) {
+  if (_loadedScripts[src]) return _loadedScripts[src];
+  _loadedScripts[src] = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("โหลดสคริปต์ไม่สำเร็จ: " + src));
+    document.head.appendChild(s);
+  });
+  return _loadedScripts[src];
+}
+
 async function saveChunked(prefix, rows) {
   const chunks = [];
   for (let i = 0; i < rows.length; i += RW_CHUNK_SIZE) chunks.push(rows.slice(i, i + RW_CHUNK_SIZE));
@@ -3082,6 +3124,7 @@ function StaffRewardWidget({ ctx }) {
     const dateSet = new Set(ctx.dates);
     return ctx.rewardTransactions.filter((t) => {
       if (ctx.store !== "ALL" && t.store.trim().toUpperCase() !== ctx.store.trim().toUpperCase()) return false;
+      if (t.receiptType && t.receiptType.trim().toUpperCase() === "REFUND") return false; // exclude refunded bills from every reward calculation
       const iso = rwDateToISO(t.salesDate);
       return iso && dateSet.has(iso);
     });
@@ -3285,6 +3328,291 @@ function StaffRewardWidget({ ctx }) {
   );
 }
 
+/* ==================================================================== */
+/* Stock Room Management — Carton Label generator + Store Inventory      */
+/* ==================================================================== */
+function srGenInitialId(store) {
+  const d = new Date();
+  const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `CTN-${storeAbbr(store)}-${ymd}-${rand}`;
+}
+function srBlankArticle() { return { code: "", photo: null, level4: "", notFound: false }; }
+
+async function srRunOcr(dataUrl) {
+  await loadScriptOnce("https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js");
+  const { data } = await window.Tesseract.recognize(dataUrl, "eng");
+  return (data.text || "").replace(/\s+/g, "").trim();
+}
+
+function StockRoomWidget({ ctx }) {
+  const [tab, setTab] = useState("carton"); // "carton" | "inventory"
+
+  return (
+    <div>
+      <div className="sr-tabs no-print">
+        <button className={`chip${tab === "carton" ? " chip-active" : ""}`} onClick={() => setTab("carton")}>CARTON LABEL</button>
+        <button className={`chip${tab === "inventory" ? " chip-active" : ""}`} onClick={() => setTab("inventory")}>STORE INVENTORY</button>
+      </div>
+      {tab === "carton" ? <CartonLabelPanel ctx={ctx} /> : <StoreInventoryPanel ctx={ctx} />}
+    </div>
+  );
+}
+
+function CartonLabelPanel({ ctx }) {
+  const storageKey = `stockroom:carton`; // shared across the whole team, one running log
+  const [initialId, setInitialId] = useState("");
+  const [boxes, setBoxes] = useState([]);
+  const [boxNumber, setBoxNumber] = useState("");
+  const [articleCount, setArticleCount] = useState("");
+  const [articles, setArticles] = useState([]);
+  const [ocrBusy, setOcrBusy] = useState(-1);
+  const fileRef = useRef(null);
+  const activeArticleIdx = useRef(-1);
+
+  const load = useCallback(async () => {
+    try { const v = await window.storage.get(`${storageKey}:initialId`, true); if (v?.value) setInitialId(v.value); } catch (e) {}
+    try {
+      const list = await window.storage.list(`${storageKey}:box:`, true);
+      const keys = list?.keys || [];
+      const out = [];
+      for (const k of keys) { try { const v = await window.storage.get(k, true); if (v?.value) out.push(JSON.parse(v.value)); } catch (e) {} }
+      out.sort((a, b) => (a.savedAt || "").localeCompare(b.savedAt || ""));
+      setBoxes(out);
+    } catch (e) {}
+  }, [storageKey]);
+  useEffect(() => { load(); }, [load]);
+
+  const startNewBatch = async () => {
+    const id = srGenInitialId(ctx.store);
+    setInitialId(id);
+    try { await window.storage.set(`${storageKey}:initialId`, id, true); } catch (e) {}
+  };
+
+  const setArticleCountAndBuild = (val) => {
+    const n = Math.max(0, parseInt(val, 10) || 0);
+    setArticleCount(val);
+    setArticles(Array.from({ length: n }, () => srBlankArticle()));
+  };
+
+  const updateArticle = (idx, patch) => setArticles((prev) => prev.map((a, i) => (i === idx ? { ...a, ...patch } : a)));
+
+  const lookupArticle = (idx, code) => {
+    const hit = skuLookupCode(ctx.skuLookup, code);
+    if (hit) updateArticle(idx, { code, level4: hit.level4, notFound: false });
+    else updateArticle(idx, { code, level4: "", notFound: !!code });
+  };
+
+  const openPhotoPicker = (idx) => { activeArticleIdx.current = idx; fileRef.current?.click(); };
+  const handlePhotoChosen = (file) => {
+    if (!file) return;
+    const idx = activeArticleIdx.current;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        const scale = Math.min(1, 640 / img.width);
+        canvas.width = img.width * scale; canvas.height = img.height * scale;
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+        updateArticle(idx, { photo: dataUrl });
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const runOcrFor = async (idx) => {
+    const a = articles[idx];
+    if (!a.photo) { ctx.showToast("error", "แนบภาพก่อนถึงจะแปลงเป็นรหัสได้"); return; }
+    setOcrBusy(idx);
+    try {
+      const text = await srRunOcr(a.photo);
+      if (text) { lookupArticle(idx, text); ctx.showToast("success", `อ่านได้ว่า "${text}" — กรุณาตรวจสอบและแก้ไขให้ถูกต้องก่อนบันทึก`); }
+      else ctx.showToast("error", "อ่านรหัสจากภาพไม่ได้ กรุณาพิมพ์เอง");
+    } catch (e) { ctx.showToast("error", "แปลงภาพไม่สำเร็จ — กรุณาพิมพ์รหัสเอง"); }
+    setOcrBusy(-1);
+  };
+
+  const saveBox = async () => {
+    if (!boxNumber.trim()) { ctx.showToast("error", "กรอกกล่องที่ก่อน"); return; }
+    if (articles.length === 0) { ctx.showToast("error", "กรอกจำนวน Article ต่อกล่องก่อน"); return; }
+    const box = { id: `box_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`, initialId, boxNumber: boxNumber.trim(), articleCount: articles.length, articles, store: ctx.store, savedBy: ctx.session?.nickname || "-", savedAt: new Date().toISOString() };
+    try {
+      await window.storage.set(`${storageKey}:box:${box.id}`, JSON.stringify(box), true);
+      ctx.showToast("success", `บันทึกกล่องที่ ${box.boxNumber} แล้ว`);
+      setBoxNumber(""); setArticleCount(""); setArticles([]);
+      load();
+    } catch (e) { ctx.showToast("error", "บันทึกไม่สำเร็จ"); }
+  };
+
+  const removeBox = async (id) => {
+    try { await window.storage.delete(`${storageKey}:box:${id}`, true); load(); } catch (e) {}
+  };
+
+  const generateLabels = async () => {
+    if (boxes.length === 0) { ctx.showToast("error", "ยังไม่มีกล่องที่บันทึกไว้เลย"); return; }
+    try {
+      await loadScriptOnce("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ unit: "mm", format: "a4" });
+      boxes.forEach((box, i) => {
+        if (i > 0) doc.addPage();
+        doc.setFontSize(18); doc.setFont(undefined, "bold");
+        doc.text("CARTON LABEL", 105, 20, { align: "center" });
+        doc.setFontSize(11); doc.setFont(undefined, "normal");
+        doc.text(`Initial ID: ${box.initialId || "-"}`, 15, 32);
+        doc.text(`สาขา: ${box.store === "ALL" ? "-" : box.store}`, 15, 39);
+        doc.setFontSize(14); doc.setFont(undefined, "bold");
+        doc.text(`กล่องที่: ${box.boxNumber}`, 15, 50);
+        doc.setFontSize(11); doc.setFont(undefined, "normal");
+        doc.text(`จำนวน Article: ${box.articleCount}`, 15, 57);
+        let y = 68;
+        doc.setFont(undefined, "bold");
+        doc.text("#", 15, y); doc.text("รหัสสินค้า (Prod Code)", 30, y); doc.text("ประเภท (Level 4)", 110, y);
+        doc.setFont(undefined, "normal");
+        y += 6;
+        box.articles.forEach((a, idx) => {
+          if (y > 280) { doc.addPage(); y = 20; }
+          doc.text(String(idx + 1), 15, y);
+          doc.text(String(a.code || "-").slice(0, 30), 30, y);
+          doc.text(String(a.level4 || "-").slice(0, 30), 110, y);
+          y += 6;
+        });
+        doc.setFontSize(8); doc.setTextColor(150);
+        doc.text(`บันทึกโดย ${box.savedBy} · ${new Date(box.savedAt).toLocaleString("th-TH")}`, 15, 290);
+        doc.setTextColor(0);
+      });
+      doc.save(`CartonLabel_${initialId || "batch"}.pdf`);
+      ctx.showToast("success", `สร้างใบปะหน้าสำเร็จ (${boxes.length} กล่อง)`);
+    } catch (e) { ctx.showToast("error", "สร้าง PDF ไม่สำเร็จ: " + e.message); }
+  };
+
+  return (
+    <div>
+      <div className="sr-initial-banner">
+        <div className="sr-initial-label">Initial ID</div>
+        {initialId ? (
+          <div className="sr-initial-value">{initialId}</div>
+        ) : (
+          <button className="btn btn-primary no-print" onClick={startNewBatch}><Plus size={13} /> เริ่มชุดใหม่ (สร้าง Initial ID)</button>
+        )}
+        {initialId && <button className="btn btn-outline no-print" onClick={startNewBatch}>เริ่มชุดใหม่</button>}
+      </div>
+
+      {initialId && (
+        <>
+          <div className="sr-box-form">
+            <div>
+              <label className="field-label">กล่องที่</label>
+              <input type="text" value={boxNumber} onChange={(e) => setBoxNumber(e.target.value)} placeholder="เช่น 1, 2, A1" />
+            </div>
+            <div>
+              <label className="field-label">จำนวน Article ต่อกล่อง</label>
+              <input type="number" value={articleCount} onChange={(e) => setArticleCountAndBuild(e.target.value)} />
+            </div>
+          </div>
+
+          {articles.map((a, idx) => (
+            <div className="sr-article-row" key={idx}>
+              <div className="sr-article-idx">#{idx + 1}</div>
+              <div className="sr-article-fields">
+                <input type="text" value={a.code} onChange={(e) => lookupArticle(idx, e.target.value)} placeholder="พิมพ์รหัสสินค้า (Prod Code / SKU Code)" />
+                <div className="sr-article-photo-row">
+                  {a.photo ? (
+                    <div className="photo-thumb sr-photo-sm"><img src={a.photo} alt="" /><button className="photo-remove no-print" onClick={() => updateArticle(idx, { photo: null })}><X size={11} /></button></div>
+                  ) : (
+                    <button className="photo-add sr-photo-sm no-print" onClick={() => openPhotoPicker(idx)}><Camera size={16} /></button>
+                  )}
+                  <button className="btn btn-outline no-print" onClick={() => runOcrFor(idx)} disabled={!a.photo || ocrBusy === idx}>
+                    {ocrBusy === idx ? "กำลังอ่าน..." : "แปลงรูปเป็นรหัส (ทดลอง)"}
+                  </button>
+                </div>
+                {a.code && (
+                  a.notFound ? (
+                    <div className="sr-lookup-fail">ไม่พบรหัสนี้ในฐานข้อมูล — พิมพ์/ตรวจสอบรหัสอีกครั้ง</div>
+                  ) : a.level4 ? (
+                    <div className="sr-lookup-ok">ประเภท: {a.level4}</div>
+                  ) : null
+                )}
+              </div>
+            </div>
+          ))}
+          <input ref={fileRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { handlePhotoChosen(e.target.files[0]); e.target.value = ""; }} />
+
+          {articles.length > 0 && (
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: ".7rem" }}>
+              <button className="btn btn-primary no-print" onClick={saveBox}><Save size={14} /> บันทึกกล่องนี้</button>
+            </div>
+          )}
+        </>
+      )}
+
+      {boxes.length > 0 && (
+        <div style={{ marginTop: "1.2rem", paddingTop: "1rem", borderTop: "1px solid var(--line)" }}>
+          <div className="panel-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>กล่องที่บันทึกแล้ว ({boxes.length})</span>
+            <button className="btn btn-primary no-print" onClick={generateLabels}><FileSpreadsheet size={13} /> สร้างใบปะหน้า (PDF)</button>
+          </div>
+          {boxes.map((b) => (
+            <div className="task-admin-row" key={b.id}>
+              <div>
+                <b>กล่องที่ {b.boxNumber}</b>
+                <div className="task-meta"><span>{b.articleCount} Article</span><span>{b.savedBy}</span><span>{new Date(b.savedAt).toLocaleString("th-TH")}</span></div>
+              </div>
+              <button className="btn btn-outline no-print" onClick={() => removeBox(b.id)}>ลบ</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StoreInventoryPanel({ ctx }) {
+  const [search, setSearch] = useState("");
+  const [level4Filter, setLevel4Filter] = useState("ALL");
+
+  const level4Options = useMemo(() => Array.from(new Set(ctx.skuLookup.map((r) => r.level4).filter(Boolean))).sort(), [ctx.skuLookup]);
+
+  const results = useMemo(() => {
+    const q = search.trim().toUpperCase();
+    return ctx.skuLookup.filter((r) => {
+      if (level4Filter !== "ALL" && r.level4 !== level4Filter) return false;
+      if (q && !r.prodCode.toUpperCase().includes(q)) return false;
+      return true;
+    }).slice(0, 200);
+  }, [ctx.skuLookup, search, level4Filter]);
+
+  return (
+    <div>
+      <div className="sr-inv-filter no-print">
+        <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ค้นหา Prod Code" />
+        <select value={level4Filter} onChange={(e) => setLevel4Filter(e.target.value)}>
+          <option value="ALL">ทุกประเภท (Level 4)</option>
+          {level4Options.map((l) => <option key={l} value={l}>{l}</option>)}
+        </select>
+      </div>
+      {ctx.skuLookup.length === 0 ? (
+        <div className="empty-hint">ยังไม่มีข้อมูล — อัปโหลดไฟล์สต๊อกที่ YOUR SOURCE ก่อน</div>
+      ) : (
+        <table className="data-table">
+          <thead><tr><th>Prod Code</th><th>ประเภท (Level 4)</th></tr></thead>
+          <tbody>
+            {results.map((r, i) => (
+              <tr key={i}>
+                <td>{r.prodCode}</td><td>{r.level4}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {results.length === 200 && <div className="widget-note">แสดงผล 200 รายการแรก — ลองค้นหาให้เจาะจงขึ้นเพื่อผลลัพธ์ที่ตรงกว่านี้</div>}
+    </div>
+  );
+}
+
 const WIDGET_DEFS = {
   reflection: { title: "สรุปวันนี้ (สำเร็จ/ไม่สำเร็จ)", icon: <Smile size={15} />, category: "ภาพรวม", Comp: ({ ctx }) => <ReflectionBar ctx={ctx} /> },
   achievements: { title: "Achievement Badges", icon: <Trophy size={15} />, category: "ภาพรวม", Comp: ({ ctx }) => <AchievementBadges ctx={ctx} /> },
@@ -3304,6 +3632,7 @@ const WIDGET_DEFS = {
   hourlyreport: { title: "Hourly Report", icon: <ClipboardList size={15} />, multi: true, category: "เป้าหมาย", Comp: HourlyReportWidget },
   retailprod: { title: "Retailing Productivity", icon: <Zap size={15} />, multi: true, category: "เป้าหมาย", Comp: RetailingProductivityWidget },
   staffreward: { title: "Staff Reward and Achievement", icon: <Trophy size={15} />, multi: true, category: "เป้าหมาย", dataKey: "reward", Comp: StaffRewardWidget },
+  stockroom: { title: "Stock Room Management", icon: <FileSpreadsheet size={15} />, multi: true, category: "เป้าหมาย", dataKey: "sku", Comp: StockRoomWidget },
   mallevent: { title: "Mall Event", icon: <Sparkles size={15} />, multi: true, category: "บันทึกหน้าร้าน", Comp: MallEventWidget },
   situation: { title: "สถานการณ์ร้านวันนี้", icon: <ClipboardList size={15} />, multi: true, category: "บันทึกหน้าร้าน", Comp: ({ ctx, widgetId }) => <TextNoteWidget ctx={ctx} storagePrefix={widgetId} placeholder="สรุปสถานการณ์ร้านวันนี้..." historyTitle="ประวัติสถานการณ์ร้าน" /> },
   competitor: { title: "Competitor Analysis", icon: <Trophy size={15} />, multi: true, category: "บันทึกหน้าร้าน", Comp: CompetitorAnalysisWidget },
@@ -3675,6 +4004,21 @@ const GLOBAL_STYLES = `
         .rw-scoreboard-cat{ color:#C9C9C0; font-weight:700; font-size:.78rem; text-transform:uppercase; letter-spacing:.04em; margin-bottom:.5rem; }
         .rw-scoreboard-cat-total{ color:var(--yellow); text-transform:none; letter-spacing:0; font-weight:800; }
         .rw-scoreboard-extra{ margin-top:.3rem; font-size:.66rem; color:#B9B9B0; line-height:1.5; }
+
+        .sr-tabs{ display:flex; gap:.5rem; margin-bottom:1rem; }
+        .sr-initial-banner{ display:flex; align-items:center; gap:.8rem; background:var(--ink); border-radius:12px; padding:.8rem 1rem; margin-bottom:1rem; flex-wrap:wrap; }
+        .sr-initial-label{ font-size:.68rem; color:#C9C9C0; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+        .sr-initial-value{ font-family:'JetBrains Mono',monospace; font-weight:800; font-size:1.05rem; color:var(--yellow); }
+        .sr-box-form{ display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:.8rem; margin-bottom:1rem; }
+        .sr-article-row{ display:flex; gap:.7rem; border:1px solid var(--line); border-radius:12px; padding:.7rem .8rem; margin-bottom:.6rem; background:#FCFCFA; }
+        .sr-article-idx{ font-family:'JetBrains Mono',monospace; font-weight:800; color:var(--mute); flex-shrink:0; padding-top:.3rem; }
+        .sr-article-fields{ flex:1; display:flex; flex-direction:column; gap:.5rem; }
+        .sr-article-photo-row{ display:flex; align-items:center; gap:.6rem; }
+        .sr-photo-sm{ width:44px; height:44px; flex-shrink:0; }
+        .sr-lookup-ok{ font-size:.78rem; color:#12946B; background:#E9F7F1; border-radius:8px; padding:.4rem .6rem; }
+        .sr-lookup-fail{ font-size:.78rem; color:#D4283F; background:#FCE9EB; border-radius:8px; padding:.4rem .6rem; }
+        .sr-inv-filter{ display:flex; gap:.6rem; flex-wrap:wrap; margin-bottom:.9rem; }
+        .sr-inv-filter input{ flex:1; min-width:200px; }
         .rw-scoreboard-ranks{ display:grid; grid-template-columns:repeat(3,1fr); gap:.7rem; }
         .rw-scoreboard-rank{ display:flex; flex-direction:column; align-items:center; gap:.15rem; background:#17171500; }
         .rw-scoreboard-medal{ font-size:1.2rem; }
@@ -3951,6 +4295,19 @@ const GLOBAL_STYLES = `
         .mapping-page{ max-width:1100px; margin:0 auto; padding:1.6rem; }
         .mapping-head{ display:flex; align-items:center; gap:1rem; margin-bottom:1.4rem; flex-wrap:wrap; }
         .mapping-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1rem; }
+        .upload-search-row{ display:flex; align-items:center; gap:.6rem; background:#fff; border:1px solid var(--line); border-radius:12px; padding:.7rem 1rem; margin:1.4rem 0 1rem; }
+        .upload-search-row input{ flex:1; border:none; outline:none; font-size:.88rem; background:transparent; }
+        .upload-table-wrap{ overflow-x:auto; border:1px solid var(--line); border-radius:14px; background:#fff; }
+        .upload-table{ width:100%; border-collapse:collapse; font-size:.82rem; }
+        .upload-table thead th{ text-align:left; padding:.7rem .9rem; background:#FAFAF8; border-bottom:1px solid var(--line); font-size:.7rem; text-transform:uppercase; letter-spacing:.03em; color:var(--mute); white-space:nowrap; }
+        .upload-table tbody td{ padding:.8rem .9rem; border-bottom:1px solid var(--line); vertical-align:top; }
+        .upload-table tbody tr:last-child td{ border-bottom:none; }
+        .upload-row-name{ font-weight:700; white-space:nowrap; display:flex; align-items:center; gap:.4rem; }
+        .upload-row-desc{ color:var(--mute); font-size:.76rem; max-width:320px; line-height:1.5; }
+        .upload-row-action{ display:flex; flex-direction:column; gap:.4rem; align-items:flex-start; }
+        .upload-row-action .btn{ white-space:nowrap; }
+        .upload-row-status{ font-size:.78rem; color:var(--mute); min-width:160px; }
+        .upload-row-clear{ white-space:nowrap; }
         .mapping-card{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:1.1rem; }
         .mapping-cols{ font-size:.72rem; color:var(--mute); line-height:1.6; margin-bottom:.8rem; background:#FCFCFA; border:1px solid var(--line); border-radius:9px; padding:.6rem .7rem; }
         .mapping-status{ font-size:.74rem; color:var(--mute); margin-top:.5rem; }
@@ -4060,6 +4417,7 @@ function Dashboard({ session, onLogout }) {
   const [rewardLeadership, setRewardLeadership] = useState([]);
   const [rewardTransactions, setRewardTransactions] = useState([]);
   const [rewardPeriod, setRewardPeriod] = useState("");
+  const [skuLookup, setSkuLookup] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [authority, setAuthority] = useState({});
   const [uploadTimestamps, setUploadTimestamps] = useState({});
@@ -4092,7 +4450,7 @@ function Dashboard({ session, onLogout }) {
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [favorites, setFavorites] = useState([]);
 
-  const fileCurrentRef = useRef(null), fileLastYearRef = useRef(null), fileTenderRef = useRef(null), fileTargetRef = useRef(null), fileNationalityRef = useRef(null), fileVatRefundRef = useRef(null), fileRewardRef = useRef(null);
+  const fileCurrentRef = useRef(null), fileLastYearRef = useRef(null), fileTenderRef = useRef(null), fileTargetRef = useRef(null), fileNationalityRef = useRef(null), fileVatRefundRef = useRef(null), fileRewardRef = useRef(null), fileSkuRef = useRef(null);
 
   const showToast = useCallback((type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 4200); }, []);
 
@@ -4107,6 +4465,7 @@ function Dashboard({ session, onLogout }) {
       try { const v = await window.storage.get("data:rewardLeadership", true); if (v?.value) setRewardLeadership(JSON.parse(v.value)); } catch (e) {}
       try { const rows = await loadChunked("data:rewardTransactions"); if (rows.length) setRewardTransactions(rows); } catch (e) {}
       try { const v = await window.storage.get("data:rewardPeriod", true); if (v?.value) setRewardPeriod(JSON.parse(v.value)); } catch (e) {}
+      try { const rows = await loadChunked("data:skuLookup"); if (rows.length) setSkuLookup(rows); } catch (e) {}
       try { const v = await window.storage.get("data:tasks", true); if (v?.value) setTasks(JSON.parse(v.value)); } catch (e) {}
       try { const v = await window.storage.get(AUTHORITY_KEY, true); if (v?.value) setAuthority(JSON.parse(v.value)); } catch (e) {}
       try {
@@ -4320,6 +4679,21 @@ function Dashboard({ session, onLogout }) {
     } catch (e) { showToast("error", `อ่านไฟล์ไม่สำเร็จ: ${e.message}`); }
   }, [showToast, persistRewardLeadership, persistRewardTransactions, persistRewardPeriod, rewardLeadership, rewardTransactions, touchUpload]);
 
+  const handleSkuUpload = useCallback(async (fileList) => {
+    const files = Array.from(fileList || []); if (files.length === 0) return;
+    const file = files[0];
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const records = skuParseWorkbook(wb);
+      if (records.length === 0) { showToast("error", "หาคอลัมน์ Prod Code / SKU Code ในไฟล์ไม่เจอ"); return; }
+      setSkuLookup(records);
+      await saveChunked("data:skuLookup", records);
+      await touchUpload("sku");
+      showToast("success", `อัปโหลดฐานข้อมูลสินค้า/สต๊อกสำเร็จ (${records.length} รายการ)`);
+    } catch (e) { showToast("error", `อ่านไฟล์ไม่สำเร็จ: ${e.message}`); }
+  }, [showToast, touchUpload]);
+
   const toggleDemo = useCallback(() => {
     if (demoMode) {
       const empty = { kpi: [], brand: [], discReason: [], salesPerson: [], sku: [], promo: [] };
@@ -4411,7 +4785,7 @@ function Dashboard({ session, onLogout }) {
   const visibleWidgets = widgetOrder.filter((id) => !hidden.includes(id) && isAllowedWidget(authority, session?.position, widgetType(id)));
   const hiddenWidgets = widgetOrder.filter((id) => hidden.includes(id));
 
-  const ctx = { store, from, to, dates, lyDates, data, lyData, tenderCurrent, tenderLastYear, targets, nationality, vatRefundRows, tasks, saveTask, deleteTask, stores, curTotals, lyTotals, hasLY, footfall, setFootfall, showToast, demoMode, session, addInstance, authority, rewardLeadership, rewardTransactions, rewardPeriod, uploadTimestamps };
+  const ctx = { store, from, to, dates, lyDates, data, lyData, tenderCurrent, tenderLastYear, targets, nationality, vatRefundRows, tasks, saveTask, deleteTask, stores, curTotals, lyTotals, hasLY, footfall, setFootfall, showToast, demoMode, session, addInstance, authority, rewardLeadership, rewardTransactions, rewardPeriod, uploadTimestamps, skuLookup };
 
   const submitReport = useCallback(async () => {
     setSubmitting(true);
@@ -4474,9 +4848,9 @@ function Dashboard({ session, onLogout }) {
         <MappingToolPage
           onBack={() => setPage("build")}
           demoMode={demoMode} toggleDemo={toggleDemo}
-          fileCurrentRef={fileCurrentRef} fileLastYearRef={fileLastYearRef} fileTenderRef={fileTenderRef} fileTargetRef={fileTargetRef} fileNationalityRef={fileNationalityRef} fileVatRefundRef={fileVatRefundRef} fileRewardRef={fileRewardRef}
-          handleSalesUpload={handleSalesUpload} handleTenderUpload={handleTenderUpload} handleTargetUpload={handleTargetUpload} handleNationalityUpload={handleNationalityUpload} handleVatRefundUpload={handleVatRefundUpload} handleRewardUpload={handleRewardUpload} resetRewardData={resetRewardData}
-          data={data} tenderCurrent={tenderCurrent} targets={targets} nationality={nationality} vatRefundRows={vatRefundRows} rewardLeadership={rewardLeadership} rewardTransactions={rewardTransactions} rewardPeriod={rewardPeriod}
+          fileCurrentRef={fileCurrentRef} fileLastYearRef={fileLastYearRef} fileTenderRef={fileTenderRef} fileTargetRef={fileTargetRef} fileNationalityRef={fileNationalityRef} fileVatRefundRef={fileVatRefundRef} fileRewardRef={fileRewardRef} fileSkuRef={fileSkuRef}
+          handleSalesUpload={handleSalesUpload} handleTenderUpload={handleTenderUpload} handleTargetUpload={handleTargetUpload} handleNationalityUpload={handleNationalityUpload} handleVatRefundUpload={handleVatRefundUpload} handleRewardUpload={handleRewardUpload} resetRewardData={resetRewardData} handleSkuUpload={handleSkuUpload}
+          data={data} tenderCurrent={tenderCurrent} targets={targets} nationality={nationality} vatRefundRows={vatRefundRows} rewardLeadership={rewardLeadership} rewardTransactions={rewardTransactions} rewardPeriod={rewardPeriod} skuLookup={skuLookup}
           webhookUrl={webhookUrl} saveWebhookUrl={saveWebhookUrl}
           tasks={tasks} saveTask={saveTask} deleteTask={deleteTask} stores={stores}
           authority={authority} saveAuthority={saveAuthority}
@@ -4578,7 +4952,7 @@ function Dashboard({ session, onLogout }) {
               const def = WIDGET_DEFS[type];
               if (!def) return null;
               const Comp = def.Comp;
-              const span2 = type === "sku" || type === "breakdown" || type === "overview" || type === "perfectbillftw" || type === "perfectbillapp" || type === "perfectbillacc" || type === "hourlyreport" || type === "competitor" || type === "vatrefund" || type === "document" || type === "reflection" || type === "achievements" || type === "kpi" || type === "retailprod" || type === "staffreward";
+              const span2 = type === "sku" || type === "breakdown" || type === "overview" || type === "perfectbillftw" || type === "perfectbillapp" || type === "perfectbillacc" || type === "hourlyreport" || type === "competitor" || type === "vatrefund" || type === "document" || type === "reflection" || type === "achievements" || type === "kpi" || type === "retailprod" || type === "staffreward" || type === "stockroom";
               const sameType = visibleWidgets.filter((w) => widgetType(w) === type);
               const title = sameType.length > 1 ? `${def.title} #${sameType.indexOf(id) + 1}` : def.title;
               return (
@@ -4697,7 +5071,7 @@ function CloudStorageSettingsCard() {
   );
 }
 
-function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLastYearRef, fileTenderRef, fileTargetRef, fileNationalityRef, fileVatRefundRef, fileRewardRef, handleSalesUpload, handleTenderUpload, handleTargetUpload, handleNationalityUpload, handleVatRefundUpload, handleRewardUpload, resetRewardData, data, tenderCurrent, targets, nationality, vatRefundRows, rewardLeadership, rewardTransactions, rewardPeriod, webhookUrl, saveWebhookUrl, tasks, saveTask, deleteTask, stores, authority, saveAuthority, uploadTimestamps }) {
+function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLastYearRef, fileTenderRef, fileTargetRef, fileNationalityRef, fileVatRefundRef, fileRewardRef, fileSkuRef, handleSalesUpload, handleTenderUpload, handleTargetUpload, handleNationalityUpload, handleVatRefundUpload, handleRewardUpload, resetRewardData, handleSkuUpload, data, tenderCurrent, targets, nationality, vatRefundRows, rewardLeadership, rewardTransactions, rewardPeriod, skuLookup, webhookUrl, saveWebhookUrl, tasks, saveTask, deleteTask, stores, authority, saveAuthority, uploadTimestamps }) {
   const lastUpload = (key) => {
     const t = fmtUploadedAt(uploadTimestamps?.[key]);
     return t ? <div className="mapping-status">🕒 อัปโหลดล่าสุด: {t}</div> : null;
@@ -4705,6 +5079,8 @@ function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLas
   const [confirmResetReward, setConfirmResetReward] = useState(false);
   const [urlInput, setUrlInput] = useState(webhookUrl || "");
   useEffect(() => { setUrlInput(webhookUrl || ""); }, [webhookUrl]);
+  const [uploadSearch, setUploadSearch] = useState("");
+  const matchesSearch = (title) => !uploadSearch.trim() || title.toLowerCase().includes(uploadSearch.trim().toLowerCase());
 
   return (
     <div className="mapping-page">
@@ -4733,100 +5109,127 @@ function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLas
         <CloudStorageSettingsCard />
 
         <UserAccountsAdmin />
-
-        <div className="mapping-card">
-          <div className="panel-title"><Upload size={13} /> ยอดขาย (แท็บ "2026" / "2025")</div>
-          <div className="mapping-cols">จับคอลัมน์: Store, Sales Date, Net Sales, Gross Sales, Discount Value, Sales Qty, Tax Value, Receipt No., Disc% Reason, Sales Person Code, SKU Code, Description, Unit Selling Price, Brand (คอลัมน์ AL)</div>
-          <label className="field-label">ข้อมูลปีนี้</label>
-          <div className="drop" onClick={() => fileCurrentRef.current?.click()}>
-            <FileSpreadsheet size={18} color="var(--yellow-dark)" /><div className="drop-label">คลิกเพื่อเลือกไฟล์ — .xlsx / .csv</div>
-          </div>
-          <input ref={fileCurrentRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleSalesUpload(e.target.files, "current"); e.target.value = ""; }} />
-          <div className="mapping-status">มีข้อมูลแล้ว {new Set(data.kpi.map((r) => `${r.store}__${r.date}`)).size} วัน-สาขา</div>
-          {lastUpload("sales")}
-
-          <label className="field-label" style={{ marginTop: "1rem" }}>ข้อมูลปีที่แล้ว</label>
-          <div className="drop" onClick={() => fileLastYearRef.current?.click()}>
-            <History size={18} color="var(--ink)" /><div className="drop-label">คลิกเพื่อเลือกไฟล์ — .xlsx / .csv</div>
-          </div>
-          <input ref={fileLastYearRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleSalesUpload(e.target.files, "lastyear"); e.target.value = ""; }} />
-          <button className="btn btn-outline btn-block" style={{ marginTop: ".6rem" }} onClick={toggleDemo}>
-            <Sparkles size={13} /> {demoMode ? "ล้างข้อมูลตัวอย่างปีที่แล้ว" : "โหลดข้อมูลตัวอย่างปีที่แล้ว"}
-          </button>
-        </div>
-
-        <div className="mapping-card">
-          <div className="panel-title"><CreditCard size={13} /> Tender (แท็บ "Tender")</div>
-          <div className="mapping-cols">จับคอลัมน์: Store Name, Transaction Date, Receipt NO, Total Tender · ช่องทางชำระเงิน (Cash, AMEX, ATOME, Bangkok Bank Terminal, KTC, KTC Point, KBANK, Shopee Pay) · คูปอง/Voucher คอลัมน์ V-AH ทั้ง 13 ประเภท</div>
-          <div className="drop" onClick={() => fileTenderRef.current?.click()}>
-            <FileSpreadsheet size={18} color="var(--yellow-dark)" /><div className="drop-label">คลิกเพื่อเลือกไฟล์ — .xlsx / .csv</div>
-          </div>
-          <input ref={fileTenderRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleTenderUpload(e.target.files, "current"); e.target.value = ""; }} />
-          <div className="mapping-status">มีข้อมูลแล้ว {tenderCurrent.length} วัน-สาขา</div>
-          {lastUpload("tender")}
-        </div>
-
-        <div className="mapping-card">
-          <div className="panel-title"><TargetIcon size={13} /> Target</div>
-          <div className="mapping-cols">จับคอลัมน์: Store, Month (YYYY-MM), Target — ใช้คำนวณ MTD Sale / % Hit</div>
-          <div className="drop" onClick={() => fileTargetRef.current?.click()}>
-            <FileSpreadsheet size={18} color="var(--yellow-dark)" /><div className="drop-label">คลิกเพื่อเลือกไฟล์ — .xlsx / .csv</div>
-          </div>
-          <input ref={fileTargetRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleTargetUpload(e.target.files); e.target.value = ""; }} />
-          <div className="mapping-status">มีข้อมูลแล้ว {targets.length} รายการ</div>
-          {lastUpload("target")}
-        </div>
-
-        <div className="mapping-card">
-          <div className="panel-title"><Users2 size={13} /> สัดส่วนลูกค้า (Nationality)</div>
-          <div className="mapping-cols">จับคอลัมน์: Store, Date, Nationality, และ (ถ้ามี) Count / Amount — ใช้คำนวณจำนวนต่อสัญชาติเทียบกับบิลทั้งหมด และค่าเฉลี่ยต่อวัน/ต่อคน</div>
-          <div className="drop" onClick={() => fileNationalityRef.current?.click()}>
-            <FileSpreadsheet size={18} color="var(--yellow-dark)" /><div className="drop-label">คลิกเพื่อเลือกไฟล์ — .xlsx / .csv</div>
-          </div>
-          <input ref={fileNationalityRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleNationalityUpload(e.target.files); e.target.value = ""; }} />
-          <div className="mapping-status">มีข้อมูลแล้ว {nationality.length} รายการ</div>
-          {lastUpload("nationality")}
-        </div>
-
-        <div className="mapping-card">
-          <div className="panel-title"><Plane size={13} /> VAT Refund / นักท่องเที่ยว</div>
-          <div className="mapping-cols">จับคอลัมน์: เอกสารลงวันที่ (หรือ Date), STORE, ประเทศ (หรือ Country) — ใช้เดินหน้า widget "VAT Refund Tracker" อัตโนมัติ ไม่ต้องอัปโหลดซ้ำใน widget</div>
-          <div className="drop" onClick={() => fileVatRefundRef.current?.click()}>
-            <FileSpreadsheet size={18} color="var(--yellow-dark)" /><div className="drop-label">คลิกเพื่อเลือกไฟล์ — .xlsx / .csv</div>
-          </div>
-          <input ref={fileVatRefundRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleVatRefundUpload(e.target.files); e.target.value = ""; }} />
-          <div className="mapping-status">มีข้อมูลแล้ว {vatRefundRows.length} แถว</div>
-          {lastUpload("vatrefund")}
-        </div>
-
-        <div className="mapping-card">
-          <div className="panel-title"><Trophy size={13} /> Staff Reward and Achievement</div>
-          <div className="mapping-cols">อัปโหลดไฟล์นี้ทุกวัน — ระบบจะหาตาราง "Sales Leadership" (Store Code, Employee, Job Title, # Seg, Success Segments, % Success, Sales Actual ฯลฯ) และตารางรายการขาย (Store, Brand, Sales Date, SKU Code ฯลฯ) ในไฟล์เดียวกันอัตโนมัติ ไม่ว่าจะอยู่แท็บไหน</div>
-          <div className="drop" onClick={() => fileRewardRef.current?.click()}>
-            <FileSpreadsheet size={18} color="var(--yellow-dark)" /><div className="drop-label">คลิกเพื่อเลือกไฟล์ — .xlsx</div>
-          </div>
-          <input ref={fileRewardRef} type="file" accept=".xlsx,.xls" hidden onChange={(e) => { handleRewardUpload(e.target.files); e.target.value = ""; }} />
-          <div className="mapping-status">มีข้อมูลพนักงาน {rewardLeadership.length} รายการ · รายการขาย {rewardTransactions.length} แถว{rewardPeriod && ` · ช่วง ${rewardPeriod}`}</div>
-          {lastUpload("reward")}
-          <button className={`btn btn-outline no-print${confirmResetReward ? " btn-danger-confirm" : ""}`} style={{ marginTop: ".5rem" }} onClick={() => {
-            if (!confirmResetReward) { setConfirmResetReward(true); return; }
-            resetRewardData();
-            setConfirmResetReward(false);
-          }}>
-            <X size={13} /> {confirmResetReward ? "กดอีกครั้งเพื่อยืนยันล้างข้อมูลเดิมทั้งหมด" : "ล้างข้อมูล Staff Reward เดิม (เริ่มใหม่)"}
-          </button>
-        </div>
       </div>
 
-      <DocUploadAdmin docType="announcement" label="Announcement" icon={<Zap size={13} />} />
-      <DocUploadAdmin docType="training" label="Training Tool" icon={<Trophy size={13} />} />
+      <div className="upload-search-row">
+        <Search size={15} color="var(--mute)" />
+        <input type="text" value={uploadSearch} onChange={(e) => setUploadSearch(e.target.value)} placeholder="ค้นหา Widget ที่ต้องการอัปโหลด เช่น ยอดขาย, Reward, Stock" />
+      </div>
+
+      <div className="upload-table-wrap">
+        <table className="upload-table">
+          <thead>
+            <tr><th>Widget</th><th>คำอธิบาย</th><th>อัปโหลด</th><th>สถานะ / อัปโหลดล่าสุด</th><th>ล้างข้อมูล</th></tr>
+          </thead>
+          <tbody>
+            {matchesSearch("ยอดขาย") && (
+              <tr>
+                <td className="upload-row-name"><Upload size={14} /> ยอดขาย</td>
+                <td className="upload-row-desc">จับคอลัมน์: Store, Sales Date, Net Sales, Gross Sales, Discount Value, Sales Qty, Tax Value, Receipt No., Disc% Reason, Sales Person Code, SKU Code, Description, Unit Selling Price, Brand (คอลัมน์ AL) — แท็บ "2026"/"2025"</td>
+                <td className="upload-row-action">
+                  <button className="btn btn-outline" onClick={() => fileCurrentRef.current?.click()}><FileSpreadsheet size={13} /> ปีนี้</button>
+                  <input ref={fileCurrentRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleSalesUpload(e.target.files, "current"); e.target.value = ""; }} />
+                  <button className="btn btn-outline" onClick={() => fileLastYearRef.current?.click()}><History size={13} /> ปีที่แล้ว</button>
+                  <input ref={fileLastYearRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleSalesUpload(e.target.files, "lastyear"); e.target.value = ""; }} />
+                  <button className="btn btn-outline" onClick={toggleDemo}><Sparkles size={13} /> {demoMode ? "ล้างตัวอย่าง" : "โหลดตัวอย่างปีก่อน"}</button>
+                </td>
+                <td className="upload-row-status">มีข้อมูลแล้ว {new Set(data.kpi.map((r) => `${r.store}__${r.date}`)).size} วัน-สาขา{lastUpload("sales")}</td>
+                <td className="upload-row-clear">—</td>
+              </tr>
+            )}
+            {matchesSearch("Tender") && (
+              <tr>
+                <td className="upload-row-name"><CreditCard size={14} /> Tender</td>
+                <td className="upload-row-desc">จับคอลัมน์: Store Name, Transaction Date, Receipt NO, Total Tender · ช่องทางชำระเงินและคูปอง/Voucher — แท็บ "Tender"</td>
+                <td className="upload-row-action">
+                  <button className="btn btn-outline" onClick={() => fileTenderRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
+                  <input ref={fileTenderRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleTenderUpload(e.target.files, "current"); e.target.value = ""; }} />
+                </td>
+                <td className="upload-row-status">มีข้อมูลแล้ว {tenderCurrent.length} วัน-สาขา{lastUpload("tender")}</td>
+                <td className="upload-row-clear">—</td>
+              </tr>
+            )}
+            {matchesSearch("Target") && (
+              <tr>
+                <td className="upload-row-name"><TargetIcon size={14} /> Target</td>
+                <td className="upload-row-desc">จับคอลัมน์: Store, Month (YYYY-MM), Target — ใช้คำนวณ MTD Sale / % Hit</td>
+                <td className="upload-row-action">
+                  <button className="btn btn-outline" onClick={() => fileTargetRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
+                  <input ref={fileTargetRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleTargetUpload(e.target.files); e.target.value = ""; }} />
+                </td>
+                <td className="upload-row-status">มีข้อมูลแล้ว {targets.length} รายการ{lastUpload("target")}</td>
+                <td className="upload-row-clear">—</td>
+              </tr>
+            )}
+            {matchesSearch("สัดส่วนลูกค้า Nationality") && (
+              <tr>
+                <td className="upload-row-name"><Users2 size={14} /> สัดส่วนลูกค้า</td>
+                <td className="upload-row-desc">จับคอลัมน์: Store, Date, Nationality, Count / Amount — ใช้คำนวณจำนวนต่อสัญชาติเทียบกับบิลทั้งหมด</td>
+                <td className="upload-row-action">
+                  <button className="btn btn-outline" onClick={() => fileNationalityRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
+                  <input ref={fileNationalityRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleNationalityUpload(e.target.files); e.target.value = ""; }} />
+                </td>
+                <td className="upload-row-status">มีข้อมูลแล้ว {nationality.length} รายการ{lastUpload("nationality")}</td>
+                <td className="upload-row-clear">—</td>
+              </tr>
+            )}
+            {matchesSearch("VAT Refund นักท่องเที่ยว") && (
+              <tr>
+                <td className="upload-row-name"><Plane size={14} /> VAT Refund</td>
+                <td className="upload-row-desc">จับคอลัมน์: เอกสารลงวันที่ (Date), STORE, ประเทศ (Country) — ใช้เดินหน้า Widget "VAT Refund Tracker" อัตโนมัติ</td>
+                <td className="upload-row-action">
+                  <button className="btn btn-outline" onClick={() => fileVatRefundRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
+                  <input ref={fileVatRefundRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleVatRefundUpload(e.target.files); e.target.value = ""; }} />
+                </td>
+                <td className="upload-row-status">มีข้อมูลแล้ว {vatRefundRows.length} แถว{lastUpload("vatrefund")}</td>
+                <td className="upload-row-clear">—</td>
+              </tr>
+            )}
+            {matchesSearch("Staff Reward and Achievement") && (
+              <tr>
+                <td className="upload-row-name"><Trophy size={14} /> Staff Reward and Achievement</td>
+                <td className="upload-row-desc">หาตาราง "Sales Leadership" และตารางรายการขาย (Store, Brand, Sales Date, SKU Code ฯลฯ) ในไฟล์เดียวกันอัตโนมัติ ไม่ว่าจะอยู่แท็บไหน — อัปโหลดทุกวัน</td>
+                <td className="upload-row-action">
+                  <button className="btn btn-outline" onClick={() => fileRewardRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
+                  <input ref={fileRewardRef} type="file" accept=".xlsx,.xls" hidden onChange={(e) => { handleRewardUpload(e.target.files); e.target.value = ""; }} />
+                </td>
+                <td className="upload-row-status">พนักงาน {rewardLeadership.length} รายการ · บิล {rewardTransactions.length} แถว{rewardPeriod && ` · ${rewardPeriod}`}{lastUpload("reward")}</td>
+                <td className="upload-row-clear">
+                  <button className={`btn btn-outline btn-sm no-print${confirmResetReward ? " btn-danger-confirm" : ""}`} onClick={() => {
+                    if (!confirmResetReward) { setConfirmResetReward(true); return; }
+                    resetRewardData();
+                    setConfirmResetReward(false);
+                  }}>
+                    <X size={12} /> {confirmResetReward ? "ยืนยันล้าง" : "ล้างข้อมูล"}
+                  </button>
+                </td>
+              </tr>
+            )}
+            {matchesSearch("ฐานข้อมูลสินค้า สต๊อก Stock Room") && (
+              <tr>
+                <td className="upload-row-name"><FileSpreadsheet size={14} /> ฐานข้อมูลสินค้า/สต๊อก</td>
+                <td className="upload-row-desc">คอลัมน์ Prod Code, SKU Code, Product Desc, Level 1-4, Stock on hand ฯลฯ — ใช้ใน Carton Label + Store Inventory</td>
+                <td className="upload-row-action">
+                  <button className="btn btn-outline" onClick={() => fileSkuRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
+                  <input ref={fileSkuRef} type="file" accept=".xlsx,.xls" hidden onChange={(e) => { handleSkuUpload(e.target.files); e.target.value = ""; }} />
+                </td>
+                <td className="upload-row-status">มีข้อมูลแล้ว {skuLookup.length} รายการ{lastUpload("sku")}</td>
+                <td className="upload-row-clear">—</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <DocUploadAdmin docType="announcement" label="Announcement" icon={<Zap size={13} />} searchQuery={uploadSearch} />
+      <DocUploadAdmin docType="training" label="Training Tool" icon={<Trophy size={13} />} searchQuery={uploadSearch} />
       <TaskManagerAdmin tasks={tasks} saveTask={saveTask} deleteTask={deleteTask} stores={stores} />
       <AuthorityAdmin authority={authority} saveAuthority={saveAuthority} />
     </div>
   );
 }
 
-function DocUploadAdmin({ docType, label, icon }) {
+function DocUploadAdmin({ docType, label, icon, searchQuery }) {
   const prefix = `doc:${docType}:`;
   const [dateUpload, setDateUpload] = useState(new Date().toISOString().slice(0, 10));
   const [category, setCategory] = useState("");
@@ -4879,6 +5282,8 @@ function DocUploadAdmin({ docType, label, icon }) {
   const remove = async (id) => {
     try { await window.storage.delete(prefix + id, true); load(); } catch (e) {}
   };
+
+  if (searchQuery && searchQuery.trim() && !label.toLowerCase().includes(searchQuery.trim().toLowerCase())) return null;
 
   return (
     <div className="mapping-card" style={{ marginTop: "1rem" }}>
