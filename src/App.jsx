@@ -460,8 +460,7 @@ function rwAsicsIncentive(transactions, rate) {
 
 const RW_CHUNK_SIZE = 1500; // keep each saved piece small/reliable regardless of total dataset size
 function skuParseWorkbook(wb) {
-  // Simplified on purpose: the source file only reliably has Prod Code (column C)
-  // and Level 4 (column W) that we need — every other column is ignored.
+  // Uses Prod Code (column C), Level 2 / Brand (column U), and Level 4 (column W) — every other column is ignored.
   const records = [];
   const seen = new Set();
   for (const sheetName of wb.SheetNames) {
@@ -471,13 +470,13 @@ function skuParseWorkbook(wb) {
     if (hIdx === -1) continue;
     const header = rows[hIdx].map((c) => String(c || "").trim());
     const col = (names) => rwFindColFlexible(header, names);
-    const c = { prodCode: col(["Prod Code"]), level4: col(["Level 4"]) };
+    const c = { prodCode: col(["Prod Code"]), level2: col(["Level 2"]), level4: col(["Level 4"]) };
     for (let i = hIdx + 1; i < rows.length; i++) {
       const row = rows[i] || [];
       const prodCode = String(row[c.prodCode] || "").trim();
       if (!prodCode || seen.has(prodCode.toUpperCase())) continue;
       seen.add(prodCode.toUpperCase());
-      records.push({ prodCode, level4: String(row[c.level4] || "").trim() });
+      records.push({ prodCode, brand: String(row[c.level2] || "").trim(), level4: String(row[c.level4] || "").trim() });
     }
   }
   return records;
@@ -486,6 +485,10 @@ function skuLookupCode(skuLookup, code) {
   const c = String(code || "").trim().toUpperCase();
   if (!c) return null;
   return skuLookup.find((r) => r.prodCode.toUpperCase() === c) || null;
+}
+function skuImageUrl(prodCode) {
+  if (!prodCode) return null;
+  return `https://i1.adis.ws/i/jpl/jd_${prodCode}_a`;
 }
 
 const _loadedScripts = {};
@@ -3337,7 +3340,7 @@ function srGenInitialId(store) {
   const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
   return `CTN-${storeAbbr(store)}-${ymd}-${rand}`;
 }
-function srBlankArticle() { return { code: "", photo: null, level4: "", notFound: false }; }
+function srBlankArticle() { return { code: "", photo: null, brand: "", level4: "", notFound: false }; }
 
 async function srRunOcr(dataUrl) {
   await loadScriptOnce("https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js");
@@ -3399,8 +3402,8 @@ function CartonLabelPanel({ ctx }) {
 
   const lookupArticle = (idx, code) => {
     const hit = skuLookupCode(ctx.skuLookup, code);
-    if (hit) updateArticle(idx, { code, level4: hit.level4, notFound: false });
-    else updateArticle(idx, { code, level4: "", notFound: !!code });
+    if (hit) updateArticle(idx, { code, brand: hit.brand, level4: hit.level4, notFound: false });
+    else updateArticle(idx, { code, brand: "", level4: "", notFound: !!code });
   };
 
   const openPhotoPicker = (idx) => { activeArticleIdx.current = idx; fileRef.current?.click(); };
@@ -3470,14 +3473,15 @@ function CartonLabelPanel({ ctx }) {
         doc.text(`จำนวน Article: ${box.articleCount}`, 15, 57);
         let y = 68;
         doc.setFont(undefined, "bold");
-        doc.text("#", 15, y); doc.text("รหัสสินค้า (Prod Code)", 30, y); doc.text("ประเภท (Level 4)", 110, y);
+        doc.text("#", 15, y); doc.text("รหัสสินค้า (Prod Code)", 30, y); doc.text("แบรนด์", 100, y); doc.text("ประเภท (Level 4)", 140, y);
         doc.setFont(undefined, "normal");
         y += 6;
         box.articles.forEach((a, idx) => {
           if (y > 280) { doc.addPage(); y = 20; }
           doc.text(String(idx + 1), 15, y);
-          doc.text(String(a.code || "-").slice(0, 30), 30, y);
-          doc.text(String(a.level4 || "-").slice(0, 30), 110, y);
+          doc.text(String(a.code || "-").slice(0, 24), 30, y);
+          doc.text(String(a.brand || "-").slice(0, 18), 100, y);
+          doc.text(String(a.level4 || "-").slice(0, 24), 140, y);
           y += 6;
         });
         doc.setFontSize(8); doc.setTextColor(150);
@@ -3532,8 +3536,17 @@ function CartonLabelPanel({ ctx }) {
                 {a.code && (
                   a.notFound ? (
                     <div className="sr-lookup-fail">ไม่พบรหัสนี้ในฐานข้อมูล — พิมพ์/ตรวจสอบรหัสอีกครั้ง</div>
-                  ) : a.level4 ? (
-                    <div className="sr-lookup-ok">ประเภท: {a.level4}</div>
+                  ) : (a.brand || a.level4) ? (
+                    <div className="sr-lookup-ok">
+                      <img
+                        src={skuImageUrl(a.code)}
+                        alt=""
+                        className="sr-product-img"
+                        onError={(e) => { e.target.style.display = "none"; }}
+                        onLoad={(e) => { e.target.style.display = ""; }}
+                      />
+                      <div>แบรนด์: {a.brand || "-"} · ประเภท: {a.level4 || "-"}</div>
+                    </div>
                   ) : null
                 )}
               </div>
@@ -3572,23 +3585,30 @@ function CartonLabelPanel({ ctx }) {
 
 function StoreInventoryPanel({ ctx }) {
   const [search, setSearch] = useState("");
+  const [brandFilter, setBrandFilter] = useState("ALL");
   const [level4Filter, setLevel4Filter] = useState("ALL");
 
+  const brandOptions = useMemo(() => Array.from(new Set(ctx.skuLookup.map((r) => r.brand).filter(Boolean))).sort(), [ctx.skuLookup]);
   const level4Options = useMemo(() => Array.from(new Set(ctx.skuLookup.map((r) => r.level4).filter(Boolean))).sort(), [ctx.skuLookup]);
 
   const results = useMemo(() => {
     const q = search.trim().toUpperCase();
     return ctx.skuLookup.filter((r) => {
+      if (brandFilter !== "ALL" && r.brand !== brandFilter) return false;
       if (level4Filter !== "ALL" && r.level4 !== level4Filter) return false;
       if (q && !r.prodCode.toUpperCase().includes(q)) return false;
       return true;
     }).slice(0, 200);
-  }, [ctx.skuLookup, search, level4Filter]);
+  }, [ctx.skuLookup, search, brandFilter, level4Filter]);
 
   return (
     <div>
       <div className="sr-inv-filter no-print">
         <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ค้นหา Prod Code" />
+        <select value={brandFilter} onChange={(e) => setBrandFilter(e.target.value)}>
+          <option value="ALL">ทุกแบรนด์ (Level 2)</option>
+          {brandOptions.map((b) => <option key={b} value={b}>{b}</option>)}
+        </select>
         <select value={level4Filter} onChange={(e) => setLevel4Filter(e.target.value)}>
           <option value="ALL">ทุกประเภท (Level 4)</option>
           {level4Options.map((l) => <option key={l} value={l}>{l}</option>)}
@@ -3598,11 +3618,12 @@ function StoreInventoryPanel({ ctx }) {
         <div className="empty-hint">ยังไม่มีข้อมูล — อัปโหลดไฟล์สต๊อกที่ YOUR SOURCE ก่อน</div>
       ) : (
         <table className="data-table">
-          <thead><tr><th>Prod Code</th><th>ประเภท (Level 4)</th></tr></thead>
+          <thead><tr><th>ภาพ</th><th>Prod Code</th><th>แบรนด์ (Level 2)</th><th>ประเภท (Level 4)</th></tr></thead>
           <tbody>
             {results.map((r, i) => (
               <tr key={i}>
-                <td>{r.prodCode}</td><td>{r.level4}</td>
+                <td><img src={skuImageUrl(r.prodCode)} alt="" className="sr-product-img-sm" onError={(e) => { e.target.style.visibility = "hidden"; }} /></td>
+                <td>{r.prodCode}</td><td>{r.brand}</td><td>{r.level4}</td>
               </tr>
             ))}
           </tbody>
@@ -4017,6 +4038,8 @@ const GLOBAL_STYLES = `
         .sr-photo-sm{ width:44px; height:44px; flex-shrink:0; }
         .sr-lookup-ok{ font-size:.78rem; color:#12946B; background:#E9F7F1; border-radius:8px; padding:.4rem .6rem; }
         .sr-lookup-fail{ font-size:.78rem; color:#D4283F; background:#FCE9EB; border-radius:8px; padding:.4rem .6rem; }
+        .sr-product-img{ display:block; max-width:120px; max-height:120px; border-radius:8px; margin-bottom:.4rem; border:1px solid var(--line); object-fit:contain; background:#fff; }
+        .sr-product-img-sm{ width:44px; height:44px; border-radius:6px; border:1px solid var(--line); object-fit:contain; background:#fff; }
         .sr-inv-filter{ display:flex; gap:.6rem; flex-wrap:wrap; margin-bottom:.9rem; }
         .sr-inv-filter input{ flex:1; min-width:200px; }
         .rw-scoreboard-ranks{ display:grid; grid-template-columns:repeat(3,1fr); gap:.7rem; }
@@ -5208,7 +5231,7 @@ function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLas
             {matchesSearch("ฐานข้อมูลสินค้า สต๊อก Stock Room") && (
               <tr>
                 <td className="upload-row-name"><FileSpreadsheet size={14} /> ฐานข้อมูลสินค้า/สต๊อก</td>
-                <td className="upload-row-desc">คอลัมน์ Prod Code, SKU Code, Product Desc, Level 1-4, Stock on hand ฯลฯ — ใช้ใน Carton Label + Store Inventory</td>
+                <td className="upload-row-desc">ใช้แค่ 3 คอลัมน์: Prod Code (C), Level 2/แบรนด์ (U), Level 4/ประเภท (W) — ใช้ใน Carton Label + Store Inventory</td>
                 <td className="upload-row-action">
                   <button className="btn btn-outline" onClick={() => fileSkuRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
                   <input ref={fileSkuRef} type="file" accept=".xlsx,.xls" hidden onChange={(e) => { handleSkuUpload(e.target.files); e.target.value = ""; }} />
