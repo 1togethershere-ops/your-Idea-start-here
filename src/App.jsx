@@ -487,6 +487,17 @@ async function loadChunked(prefix) {
   try { const v = await window.storage.get(prefix, true); if (v?.value) return JSON.parse(v.value); } catch (e) {}
   return [];
 }
+async function deleteChunked(prefix) {
+  try {
+    const metaRaw = await window.storage.get(`${prefix}:meta`, true);
+    if (metaRaw?.value) {
+      const meta = JSON.parse(metaRaw.value);
+      for (let i = 0; i < meta.count; i++) { try { await window.storage.delete(`${prefix}:chunk${i}`, true); } catch (e) {} }
+    }
+    await window.storage.delete(`${prefix}:meta`, true);
+  } catch (e) {}
+  try { await window.storage.delete(prefix, true); } catch (e) {} // old non-chunked format, if any
+}
 
 const UPLOAD_META_PREFIX = "upload:meta:";
 async function recordUploadTimestamp(datasetKey) {
@@ -4239,6 +4250,16 @@ function Dashboard({ session, onLogout }) {
     showToast("success", `อัปโหลดไฟล์ VAT Refund สำเร็จ (${allRows.length} แถว) — เปิดดูที่ widget VAT Refund Tracker ได้เลย`);
   }, [showToast, persistVatRefund, touchUpload]);
 
+  const resetRewardData = useCallback(async () => {
+    await window.storage.delete("data:rewardLeadership", true).catch(() => {});
+    await deleteChunked("data:rewardTransactions");
+    await window.storage.delete("data:rewardPeriod", true).catch(() => {});
+    setRewardLeadership([]);
+    setRewardTransactions([]);
+    setRewardPeriod("");
+    showToast("success", "ล้างข้อมูล Staff Reward and Achievement เดิมหมดแล้ว — อัปโหลดไฟล์ใหม่ได้เลย");
+  }, [showToast]);
+
   const handleRewardUpload = useCallback(async (fileList) => {
     const files = Array.from(fileList || []); if (files.length === 0) return;
     const file = files[0];
@@ -4429,7 +4450,7 @@ function Dashboard({ session, onLogout }) {
           onBack={() => setPage("build")}
           demoMode={demoMode} toggleDemo={toggleDemo}
           fileCurrentRef={fileCurrentRef} fileLastYearRef={fileLastYearRef} fileTenderRef={fileTenderRef} fileTargetRef={fileTargetRef} fileNationalityRef={fileNationalityRef} fileVatRefundRef={fileVatRefundRef} fileRewardRef={fileRewardRef}
-          handleSalesUpload={handleSalesUpload} handleTenderUpload={handleTenderUpload} handleTargetUpload={handleTargetUpload} handleNationalityUpload={handleNationalityUpload} handleVatRefundUpload={handleVatRefundUpload} handleRewardUpload={handleRewardUpload}
+          handleSalesUpload={handleSalesUpload} handleTenderUpload={handleTenderUpload} handleTargetUpload={handleTargetUpload} handleNationalityUpload={handleNationalityUpload} handleVatRefundUpload={handleVatRefundUpload} handleRewardUpload={handleRewardUpload} resetRewardData={resetRewardData}
           data={data} tenderCurrent={tenderCurrent} targets={targets} nationality={nationality} vatRefundRows={vatRefundRows} rewardLeadership={rewardLeadership} rewardTransactions={rewardTransactions} rewardPeriod={rewardPeriod}
           webhookUrl={webhookUrl} saveWebhookUrl={saveWebhookUrl}
           tasks={tasks} saveTask={saveTask} deleteTask={deleteTask} stores={stores}
@@ -4651,11 +4672,12 @@ function CloudStorageSettingsCard() {
   );
 }
 
-function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLastYearRef, fileTenderRef, fileTargetRef, fileNationalityRef, fileVatRefundRef, fileRewardRef, handleSalesUpload, handleTenderUpload, handleTargetUpload, handleNationalityUpload, handleVatRefundUpload, handleRewardUpload, data, tenderCurrent, targets, nationality, vatRefundRows, rewardLeadership, rewardTransactions, rewardPeriod, webhookUrl, saveWebhookUrl, tasks, saveTask, deleteTask, stores, authority, saveAuthority, uploadTimestamps }) {
+function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLastYearRef, fileTenderRef, fileTargetRef, fileNationalityRef, fileVatRefundRef, fileRewardRef, handleSalesUpload, handleTenderUpload, handleTargetUpload, handleNationalityUpload, handleVatRefundUpload, handleRewardUpload, resetRewardData, data, tenderCurrent, targets, nationality, vatRefundRows, rewardLeadership, rewardTransactions, rewardPeriod, webhookUrl, saveWebhookUrl, tasks, saveTask, deleteTask, stores, authority, saveAuthority, uploadTimestamps }) {
   const lastUpload = (key) => {
     const t = fmtUploadedAt(uploadTimestamps?.[key]);
     return t ? <div className="mapping-status">🕒 อัปโหลดล่าสุด: {t}</div> : null;
   };
+  const [confirmResetReward, setConfirmResetReward] = useState(false);
   const [urlInput, setUrlInput] = useState(webhookUrl || "");
   useEffect(() => { setUrlInput(webhookUrl || ""); }, [webhookUrl]);
 
@@ -4761,6 +4783,13 @@ function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLas
           <input ref={fileRewardRef} type="file" accept=".xlsx,.xls" hidden onChange={(e) => { handleRewardUpload(e.target.files); e.target.value = ""; }} />
           <div className="mapping-status">มีข้อมูลพนักงาน {rewardLeadership.length} รายการ · รายการขาย {rewardTransactions.length} แถว{rewardPeriod && ` · ช่วง ${rewardPeriod}`}</div>
           {lastUpload("reward")}
+          <button className={`btn btn-outline no-print${confirmResetReward ? " btn-danger-confirm" : ""}`} style={{ marginTop: ".5rem" }} onClick={() => {
+            if (!confirmResetReward) { setConfirmResetReward(true); return; }
+            resetRewardData();
+            setConfirmResetReward(false);
+          }}>
+            <X size={13} /> {confirmResetReward ? "กดอีกครั้งเพื่อยืนยันล้างข้อมูลเดิมทั้งหมด" : "ล้างข้อมูล Staff Reward เดิม (เริ่มใหม่)"}
+          </button>
         </div>
       </div>
 
