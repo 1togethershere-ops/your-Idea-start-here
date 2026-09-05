@@ -322,6 +322,185 @@ function exportToExcel(filename, sheetsData) {
   XLSX.writeFile(wb, filename);
 }
 
+function rwNumClean(v) {
+  if (v === null || v === undefined || v === "") return 0;
+  const n = parseFloat(String(v).replace(/,/g, "").replace(/฿/g, ""));
+  return isNaN(n) ? 0 : n;
+}
+function rwPctClean(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = parseFloat(String(v).replace(/%/g, "").replace(/,/g, ""));
+  return isNaN(n) ? null : n;
+}
+function rwFindHeaderRow(rows, requiredCols) {
+  for (let i = 0; i < rows.length; i++) {
+    const row = (rows[i] || []).map((c) => String(c || "").trim().toLowerCase());
+    if (requiredCols.every((rc) => row.includes(rc.toLowerCase()))) return i;
+  }
+  return -1;
+}
+function rwFindColFlexible(header, candidates) {
+  const norm = (s) => String(s || "").toLowerCase().replace(/\.$/, "").trim();
+  const normalizedHeader = header.map(norm);
+  for (const cand of candidates) {
+    const idx = normalizedHeader.indexOf(norm(cand));
+    if (idx !== -1) return idx;
+  }
+  return -1;
+}
+function rwCellToISODate(v) {
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    return `${v.getUTCFullYear()}-${String(v.getUTCMonth() + 1).padStart(2, "0")}-${String(v.getUTCDate()).padStart(2, "0")}`;
+  }
+  if (typeof v === "number") {
+    // Excel serial date (days since 1899-12-30)
+    const ms = Math.round((v - 25569) * 86400 * 1000);
+    const d = new Date(ms);
+    if (!isNaN(d.getTime())) return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+  }
+  const s = String(v || "").trim();
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  return null;
+}
+function rwParseWorkbook(wb) {
+  const leadership = [];
+  const transactions = [];
+  let periodLabel = "";
+
+  for (const sheetName of wb.SheetNames) {
+    const sheet = wb.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: false });
+    const rowsRaw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
+
+    const lIdx = rwFindHeaderRow(rows, ["Store Code", "Employee", "Job Title"]);
+    if (lIdx !== -1) {
+      const header = rows[lIdx].map((c) => String(c || "").trim());
+      const col = (name) => header.findIndex((h) => h.toLowerCase() === name.toLowerCase());
+      const c = {
+        store: col("Store Code"), emp: col("Employee"), job: col("Job Title"),
+        seg: col("# Seg"), segOk: col("Success Segments"), segPct: col("% Success"),
+        salesActual: col("Sales Actual"), salesVar: col("Sales Var"), salesTargetPct: col("Sales % Target"),
+        salesTrans: col("Sales Trans"), convPct: col("Conv %"), atv: col("ATV"), upt: col("UPT"), visitValue: col("Visit Value"),
+      };
+      for (let j = Math.max(0, lIdx - 6); j < lIdx; j++) {
+        const text = (rows[j] || []).map((cell) => String(cell || "")).join(" ");
+        const m = text.match(/\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\s*(?:-|to|–|—)\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}/i);
+        if (m) periodLabel = m[0];
+      }
+      for (let i = lIdx + 1; i < rows.length; i++) {
+        const row = rows[i] || [];
+        const storeCode = String(row[c.store] || "").trim();
+        const employee = String(row[c.emp] || "").trim();
+        if (!storeCode || !employee) continue; // skip blank/separator rows but keep scanning the rest of the sheet
+        leadership.push({
+          storeCode, employee, jobTitle: String(row[c.job] || "").trim(),
+          segTotal: rwNumClean(row[c.seg]), segSuccess: rwNumClean(row[c.segOk]), successPct: rwPctClean(row[c.segPct]),
+          salesActual: rwNumClean(row[c.salesActual]), salesVar: rwNumClean(row[c.salesVar]), salesTargetPct: rwPctClean(row[c.salesTargetPct]),
+          salesTrans: rwNumClean(row[c.salesTrans]), convPct: rwPctClean(row[c.convPct]), atv: rwNumClean(row[c.atv]), upt: rwNumClean(row[c.upt]), visitValue: rwNumClean(row[c.visitValue]),
+          isStoreTotal: employee.toLowerCase() === "store total",
+          period: periodLabel,
+        });
+      }
+    }
+
+    const tIdx = rwFindHeaderRow(rows, ["Store", "Brand", "SKU Code"]);
+    if (tIdx !== -1) {
+      const header = rows[tIdx].map((c) => String(c || "").trim());
+      const c = {
+        store: rwFindColFlexible(header, ["Store"]),
+        brand: rwFindColFlexible(header, ["Brand"]),
+        date: rwFindColFlexible(header, ["Sales Date", "Sale Date"]),
+        sku: rwFindColFlexible(header, ["SKU Code", "SKU"]),
+        personCode: rwFindColFlexible(header, ["Sales Person Code", "Sale Person Code"]),
+        person: rwFindColFlexible(header, ["Sales Person", "Sale Person"]),
+        rType: rwFindColFlexible(header, ["Receipt Type"]),
+        rNo: rwFindColFlexible(header, ["Receipt No.", "Receipt No"]),
+        qty: rwFindColFlexible(header, ["Sales Qty", "Sale Qty", "Sale QTY", "Sales QTY"]),
+        net: rwFindColFlexible(header, ["Net Sales", "Net Sale"]),
+      };
+      const seenRows = new Set(); // dedupe exact-duplicate bill lines (same receipt+sku+qty repeated in the source file)
+      for (let i = tIdx + 1; i < rows.length; i++) {
+        const row = rows[i] || [];
+        const rawRow = rowsRaw[i] || [];
+        const store = String(row[c.store] || "").trim();
+        if (!store) continue;
+        const receiptNo = String(row[c.rNo] || "").trim();
+        const sku = String(row[c.sku] || "").trim();
+        const salesDate = rwCellToISODate(rawRow[c.date]) || String(row[c.date] || "").trim();
+        const qty = rwNumClean(row[c.qty]);
+        const netSales = rwNumClean(row[c.net]);
+        const dedupeKey = `${store}|${receiptNo}|${sku}|${salesDate}|${qty}|${netSales}`;
+        if (seenRows.has(dedupeKey)) continue; // exact duplicate bill line — skip
+        seenRows.add(dedupeKey);
+        transactions.push({
+          store, brand: String(row[c.brand] || "").trim(), salesDate, sku,
+          salesPersonCode: String(row[c.personCode] || "").trim(), salesPerson: String(row[c.person] || "").trim(),
+          receiptType: String(row[c.rType] || "").trim(), receiptNo,
+          qty, netSales,
+        });
+      }
+    }
+  }
+  return { leadership, transactions, periodLabel };
+}
+function rwAsicsIncentive(transactions, rate) {
+  const map = new Map();
+  transactions.forEach((t) => {
+    if (!t.brand.toUpperCase().includes("ASICS")) return;
+    const key = t.salesPersonCode || t.salesPerson || "-";
+    if (!key || key === "-") return;
+    if (!map.has(key)) map.set(key, { key, salesPerson: t.salesPerson || t.salesPersonCode, store: t.store, qty: 0, incentive: 0 });
+    const g = map.get(key);
+    g.qty += t.qty;
+    g.incentive += t.qty * rate;
+  });
+  return Array.from(map.values()).sort((a, b) => b.incentive - a.incentive);
+}
+
+const RW_CHUNK_SIZE = 1500; // keep each saved piece small/reliable regardless of total dataset size
+async function saveChunked(prefix, rows) {
+  const chunks = [];
+  for (let i = 0; i < rows.length; i += RW_CHUNK_SIZE) chunks.push(rows.slice(i, i + RW_CHUNK_SIZE));
+  let prevCount = 0;
+  try { const metaRaw = await window.storage.get(`${prefix}:meta`, true); if (metaRaw?.value) prevCount = JSON.parse(metaRaw.value).count || 0; } catch (e) {}
+  for (let i = 0; i < chunks.length; i++) {
+    try { await window.storage.set(`${prefix}:chunk${i}`, JSON.stringify(chunks[i]), true); } catch (e) {}
+  }
+  for (let i = chunks.length; i < prevCount; i++) {
+    try { await window.storage.delete(`${prefix}:chunk${i}`, true); } catch (e) {}
+  }
+  try { await window.storage.set(`${prefix}:meta`, JSON.stringify({ count: chunks.length, total: rows.length }), true); } catch (e) {}
+}
+async function loadChunked(prefix) {
+  try {
+    const metaRaw = await window.storage.get(`${prefix}:meta`, true);
+    if (metaRaw?.value) {
+      const meta = JSON.parse(metaRaw.value);
+      let out = [];
+      for (let i = 0; i < meta.count; i++) {
+        try { const c = await window.storage.get(`${prefix}:chunk${i}`, true); if (c?.value) out = out.concat(JSON.parse(c.value)); } catch (e) {}
+      }
+      return out;
+    }
+  } catch (e) {}
+  try { const v = await window.storage.get(prefix, true); if (v?.value) return JSON.parse(v.value); } catch (e) {}
+  return [];
+}
+
+const UPLOAD_META_PREFIX = "upload:meta:";
+async function recordUploadTimestamp(datasetKey) {
+  try { await window.storage.set(UPLOAD_META_PREFIX + datasetKey, JSON.stringify({ uploadedAt: new Date().toISOString() }), true); } catch (e) {}
+}
+function fmtUploadedAt(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  const dd = String(d.getDate()).padStart(2, "0"), mm = String(d.getMonth() + 1).padStart(2, "0"), yyyy = d.getFullYear();
+  const hh = String(d.getHours()).padStart(2, "0"), min = String(d.getMinutes()).padStart(2, "0");
+  return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
+}
+
 function mergeByKey(base, incoming, keyFn) {
   const map = new Map(base.map((r) => [keyFn(r), r]));
   for (const r of incoming) map.set(keyFn(r), r);
@@ -2802,24 +2981,301 @@ function RetailingProductivityWidget({ ctx }) {
   );
 }
 
+/* ==================================================================== */
+/* Staff Reward and Achievement — podium + race-track leaderboard         */
+/* ==================================================================== */
+const REWARD_TYPES = [
+  { key: "all", label: "All Rewards and Achievement" },
+  { key: "salesPerformance", label: "Sale Performance" },
+  { key: "leadershipSegment", label: "Leadership Segment" },
+  { key: "asicsIncentive", label: "Asics Incentive" },
+];
+const ASICS_INCENTIVE_RATE = 100; // baht per pair, from 1/09/2026, applies to full & discounted price
+const RW_SLOT_SIZE = 5; // 1 track slot = 5 pairs
+const RW_SLOT_COUNT = 20; // 20 slots = up to 100 pairs
+
+function rwDateToISO(s) {
+  const str = String(s || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str; // already ISO (new uploads store it this way)
+  const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return null;
+  const dd = m[1].padStart(2, "0"), mm = m[2].padStart(2, "0"), yyyy = m[3];
+  return `${yyyy}-${mm}-${dd}`;
+}
+function rwIsoToDMY(iso) {
+  const m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return iso;
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+function rwNormalizeName(s) {
+  return String(s || "").toUpperCase().replace(/\(.*?\)/g, "").replace(/[^A-Z0-9]/g, "").trim();
+}
+function rwMatchTransactions(transactions, employeeName) {
+  const norm = rwNormalizeName(employeeName);
+  if (!norm) return [];
+  return transactions.filter((t) => {
+    const tn = rwNormalizeName(t.salesPerson || t.salesPersonCode);
+    if (!tn) return false;
+    return tn === norm || tn.includes(norm) || norm.includes(tn);
+  });
+}
+
+function RwHoverName({ name, tooltip }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span className="rw-hover-wrap" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)} onClick={() => setShow((s) => !s)}>
+      {name}
+      {show && <div className="rw-tooltip">{tooltip}</div>}
+    </span>
+  );
+}
+
+function RwRaceLane({ rank, name, pctFinal, tooltip, valueLabel }) {
+  const [pct, setPct] = useState(0);
+  useEffect(() => {
+    setPct(0);
+    const id = setTimeout(() => setPct(pctFinal), 60);
+    return () => clearTimeout(id);
+  }, [pctFinal]);
+  return (
+    <div className="rw-race-lane">
+      <div className="rw-race-name"><RwHoverName name={`${rank}. ${name}`} tooltip={tooltip} /></div>
+      <div className="rw-race-lane-track">
+        <div className="rw-race-runner" style={{ left: `calc(${pct}% - 14px)` }}>🏃</div>
+      </div>
+      <div className="rw-race-value">{valueLabel}</div>
+    </div>
+  );
+}
+
+function RwSegmentDots({ total, success }) {
+  const dots = [];
+  for (let i = 0; i < total; i++) dots.push(i < success ? "ok" : "no");
+  return (
+    <div className="rw-seg-dots">
+      {dots.map((d, i) => <span key={i} className={`rw-seg-dot rw-seg-dot-${d}`} />)}
+    </div>
+  );
+}
+
+function StaffRewardWidget({ ctx }) {
+  const [rewardType, setRewardType] = useState("salesPerformance");
+  const [podiumLabels, setPodiumLabels] = useState(["🥇 อันดับ 1", "🥈 อันดับ 2", "🥉 อันดับ 3"]);
+
+  const leadershipFiltered = useMemo(
+    () => ctx.rewardLeadership.filter((r) => !r.isStoreTotal && (ctx.store === "ALL" || storeCodeToName(r.storeCode) === ctx.store)),
+    [ctx.rewardLeadership, ctx.store]
+  );
+  const txFiltered = useMemo(() => {
+    const dateSet = new Set(ctx.dates);
+    return ctx.rewardTransactions.filter((t) => {
+      if (ctx.store !== "ALL" && t.store.trim().toUpperCase() !== ctx.store.trim().toUpperCase()) return false;
+      const iso = rwDateToISO(t.salesDate);
+      return iso && dateSet.has(iso);
+    });
+  }, [ctx.rewardTransactions, ctx.store, ctx.dates]);
+
+  const computeRows = useCallback((type) => {
+    if (type === "asicsIncentive") {
+      const base = rwAsicsIncentive(txFiltered, ASICS_INCENTIVE_RATE);
+      return base.map((r) => {
+        const details = txFiltered.filter((t) => t.brand.toUpperCase().includes("ASICS") && (t.salesPersonCode || t.salesPerson || "-") === r.key);
+        return { name: r.salesPerson, value: r.incentive, qty: r.qty, unit: "บาท", details };
+      });
+    }
+    if (type === "leadershipSegment") {
+      return leadershipFiltered.map((r) => ({ name: r.employee, value: r.successPct ?? 0, unit: "%", raw: r })).sort((a, b) => b.value - a.value);
+    }
+    // Sale Performance — built straight from the transaction sheet, grouped by
+    // Sales Person Code (falls back to the Sales Person name if no code).
+    const map = new Map();
+    const totalBillSet = new Set();
+    txFiltered.forEach((t) => {
+      totalBillSet.add(t.receiptNo);
+      const key = t.salesPersonCode || t.salesPerson || "-";
+      if (!key || key === "-") return;
+      if (!map.has(key)) map.set(key, { name: t.salesPerson || t.salesPersonCode, value: 0, receipts: new Set() });
+      const g = map.get(key);
+      g.value += t.netSales;
+      g.receipts.add(t.receiptNo);
+    });
+    const totalBills = totalBillSet.size;
+    return Array.from(map.values())
+      .map((g) => ({ name: g.name, value: g.value, unit: "บาท", billCount: g.receipts.size, totalBills }))
+      .sort((a, b) => b.value - a.value);
+  }, [leadershipFiltered, txFiltered]);
+
+  const rows = useMemo(() => (rewardType === "all" ? [] : computeRows(rewardType)), [rewardType, computeRows]);
+  const allBoard = useMemo(() => {
+    if (rewardType !== "all") return [];
+    return REWARD_TYPES.filter((t) => t.key !== "all").map((t) => ({ label: t.label, rows: computeRows(t.key).slice(0, 3) }));
+  }, [rewardType, computeRows]);
+
+  const maxValue = rows.length ? Math.max(...rows.map((r) => r.value)) : 0;
+  const top3 = [rows[0], rows[1], rows[2]];
+  const podiumOrder = [{ r: top3[1], rank: 2 }, { r: top3[0], rank: 1 }, { r: top3[2], rank: 3 }];
+
+  const fmtVal = (r) => (r.unit === "%" ? `${r.value.toFixed(1)}%` : `${num(r.value)} บาท`);
+
+  const tooltipFor = (r) => {
+    if (rewardType === "salesPerformance") {
+      const pct = r.totalBills > 0 ? ((r.billCount || 0) / r.totalBills) * 100 : 0;
+      return (
+        <div>
+          <b>{r.name}</b>
+          <div>{num(r.billCount || 0)} Bill/Success Mix{pct.toFixed(0)}%</div>
+        </div>
+      );
+    }
+    if (rewardType === "leadershipSegment" && r.raw) {
+      return (
+        <div>
+          <b>{r.name}</b>
+          <div>Sale Actual: {num(r.raw.salesActual)} บาท</div>
+          <div>Sale Trans: {num(r.raw.salesTrans)}</div>
+          <div>ATV: {num(r.raw.atv)}</div>
+          <div>UPT: {num(r.raw.upt)}</div>
+          <div>CR: {r.raw.convPct != null ? `${r.raw.convPct.toFixed(1)}%` : "-"}</div>
+        </div>
+      );
+    }
+    if (rewardType === "asicsIncentive" && r.details) {
+      return (
+        <div>
+          <b>{r.name}</b>
+          {r.details.length > 0 ? (
+            <ul className="rw-tooltip-list">
+              {r.details.slice(0, 10).map((d, i) => <li key={i}>{d.salesDate} · {d.sku} · {d.qty} ชิ้น</li>)}
+            </ul>
+          ) : <div className="rw-tooltip-muted">ไม่พบรายการ</div>}
+        </div>
+      );
+    }
+    return <div><b>{r.name}</b><div>{fmtVal(r)}</div></div>;
+  };
+
+  return (
+    <div>
+      <div className="rw-filter-row no-print">
+        <div>
+          <label className="field-label">สาขา</label>
+          <div className="store-locked-badge">{ctx.store === "ALL" ? "ทุกสาขา" : ctx.store}</div>
+        </div>
+        <div>
+          <label className="field-label">Reward and Incentive</label>
+          <select value={rewardType} onChange={(e) => setRewardType(e.target.value)}>
+            {REWARD_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="field-label">Data Range (กรองจริงตามนี้)</label>
+          <div className="rw-period-badge">{rwIsoToDMY(ctx.from)} — {rwIsoToDMY(ctx.to)}</div>
+        </div>
+      </div>
+      {ctx.rewardPeriod && <div className="widget-note" style={{ marginBottom: ".5rem" }}>ไฟล์ที่อัปโหลดล่าสุดระบุช่วง Sales Leadership ไว้ที่: {ctx.rewardPeriod}</div>}
+      {rewardType === "asicsIncentive" && (
+        <div className="widget-note" style={{ marginBottom: ".8rem" }}>Asics Incentive: คู่ละ 100 บาท เริ่มวันที่ 1/09/2026 ร่วมรายการทั้งราคาเต็มและราคาลด · เส้นทางแบ่งเป็น 20 ช่อง ช่องละ 5 คู่ (กรองตามสาขาและช่วงวันที่ที่เลือกในตัวกรองหลักด้านซ้าย)</div>
+      )}
+
+      {rewardType === "all" ? (
+        <div className="rw-scoreboard">
+          <div className="rw-scoreboard-title">ALL REWARDS AND ACHIEVEMENT</div>
+          {allBoard.map((cat, i) => (
+            <div className="rw-scoreboard-row" key={i}>
+              <div className="rw-scoreboard-cat">{cat.label}</div>
+              <div className="rw-scoreboard-ranks">
+                {[0, 1, 2].map((idx) => {
+                  const r = cat.rows[idx];
+                  const medal = idx === 0 ? "🥇" : idx === 1 ? "🥈" : "🥉";
+                  return (
+                    <div className="rw-scoreboard-rank" key={idx}>
+                      <span className="rw-scoreboard-medal">{medal}</span>
+                      {r ? (
+                        <>
+                          <span className="rw-scoreboard-name">{r.name}</span>
+                          <span className="rw-scoreboard-value">{r.unit === "%" ? `${r.value.toFixed(1)}%` : `${num(r.value)} บาท`}</span>
+                        </>
+                      ) : <span className="rw-scoreboard-name">—</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          {allBoard.every((cat) => cat.rows.length === 0) && <div className="empty-hint">ยังไม่มีข้อมูลสำหรับตัวกรองนี้ — อัปโหลดไฟล์ที่ YOUR SOURCE ก่อน</div>}
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="empty-hint">ยังไม่มีข้อมูลสำหรับตัวกรองนี้ — อัปโหลดไฟล์ที่ YOUR SOURCE ก่อน</div>
+      ) : (
+        <>
+          <div className="rw-podium">
+            {podiumOrder.map(({ r, rank }, i) => (
+              <div className={`rw-podium-slot rw-podium-${rank}`} key={i}>
+                <input className="rw-podium-label-input no-print" value={podiumLabels[rank - 1]} onChange={(e) => { const next = [...podiumLabels]; next[rank - 1] = e.target.value; setPodiumLabels(next); }} />
+                {r ? (<>
+                  <div className="rw-podium-name"><RwHoverName name={r.name} tooltip={tooltipFor(r)} /></div>
+                  <div className="rw-podium-value">{fmtVal(r)}</div>
+                </>) : <div className="rw-podium-name">—</div>}
+                <div className="rw-podium-bar" />
+              </div>
+            ))}
+          </div>
+
+          {rewardType === "leadershipSegment" ? (
+            <div className="rw-seg-list">
+              {rows.map((r, i) => (
+                <div className="rw-seg-row" key={i}>
+                  <div className="rw-seg-name"><RwHoverName name={`${i + 1}. ${r.name}`} tooltip={tooltipFor(r)} /></div>
+                  <RwSegmentDots total={r.raw?.segTotal || 0} success={r.raw?.segSuccess || 0} />
+                  <div className="rw-seg-pct">{r.raw?.segTotal ? `${r.raw.segSuccess}/${r.raw.segTotal}` : "-"} · {r.value.toFixed(1)}%</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rw-race-track">
+              {rows.map((r, i) => {
+                const isAsics = rewardType === "asicsIncentive";
+                const pct = isAsics
+                  ? (Math.min(RW_SLOT_COUNT, Math.ceil((r.qty || 0) / RW_SLOT_SIZE)) / RW_SLOT_COUNT) * 100
+                  : (maxValue > 0 ? Math.min(100, (r.value / maxValue) * 100) : 0);
+                return (
+                  <RwRaceLane
+                    key={i}
+                    rank={i + 1}
+                    name={r.name}
+                    pctFinal={pct}
+                    tooltip={tooltipFor(r)}
+                    valueLabel={isAsics ? `${num(r.qty || 0)} คู่` : fmtVal(r)}
+                  />
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 const WIDGET_DEFS = {
   reflection: { title: "สรุปวันนี้ (สำเร็จ/ไม่สำเร็จ)", icon: <Smile size={15} />, category: "ภาพรวม", Comp: ({ ctx }) => <ReflectionBar ctx={ctx} /> },
   achievements: { title: "Achievement Badges", icon: <Trophy size={15} />, category: "ภาพรวม", Comp: ({ ctx }) => <AchievementBadges ctx={ctx} /> },
   kpi: { title: "KPI หลัก (Target/MTD/%Hit/ATV/IPT/CR)", icon: <TargetIcon size={15} />, category: "ภาพรวม", Comp: ({ ctx }) => <FixedKpiBlock ctx={ctx} /> },
-  overview: { title: "ภาพรวมยอดขาย", icon: <TrendingUp size={15} />, category: "ยอดขาย", Comp: SalesOverviewWidget },
-  trend: { title: "แนวโน้มรายวัน (ปีนี้ vs ปีก่อน)", icon: <TrendingUp size={15} />, multi: true, category: "ยอดขาย", Comp: TrendWidget },
-  breakdown: { title: "แยกตามสาขา / วันที่", icon: <FileSpreadsheet size={15} />, category: "ยอดขาย", Comp: BreakdownWidget },
-  brand: { title: "ยอดขายแยกตามแบรนด์", icon: <Tag size={15} />, multi: true, category: "ยอดขาย", Comp: BrandWidget },
-  sku: { title: "สินค้าขายดี (SKU Bestseller)", icon: <Tag size={15} />, multi: true, category: "ยอดขาย", Comp: SkuWidget },
-  discount: { title: "เหตุผลส่วนลด (Discount Reason)", icon: <Percent size={15} />, multi: true, category: "ยอดขาย", Comp: DiscountReasonWidget },
-  salesperson: { title: "ยอดขายรายพนักงาน", icon: <Users2 size={15} />, multi: true, category: "ยอดขาย", Comp: SalesPersonWidget },
-  promotion: { title: "โปรโมชั่น & ช่องทางชำระเงิน", icon: <CreditCard size={15} />, multi: true, category: "ยอดขาย", Comp: PromotionTenderWidget },
-  customermix: { title: "สัดส่วนลูกค้า", icon: <Users2 size={15} />, multi: true, category: "ยอดขาย", Comp: CustomerMixWidget },
+  overview: { title: "ภาพรวมยอดขาย", icon: <TrendingUp size={15} />, category: "ยอดขาย", dataKey: "sales", Comp: SalesOverviewWidget },
+  trend: { title: "แนวโน้มรายวัน (ปีนี้ vs ปีก่อน)", icon: <TrendingUp size={15} />, multi: true, category: "ยอดขาย", dataKey: "sales", Comp: TrendWidget },
+  breakdown: { title: "แยกตามสาขา / วันที่", icon: <FileSpreadsheet size={15} />, category: "ยอดขาย", dataKey: "sales", Comp: BreakdownWidget },
+  brand: { title: "ยอดขายแยกตามแบรนด์", icon: <Tag size={15} />, multi: true, category: "ยอดขาย", dataKey: "sales", Comp: BrandWidget },
+  sku: { title: "สินค้าขายดี (SKU Bestseller)", icon: <Tag size={15} />, multi: true, category: "ยอดขาย", dataKey: "sales", Comp: SkuWidget },
+  discount: { title: "เหตุผลส่วนลด (Discount Reason)", icon: <Percent size={15} />, multi: true, category: "ยอดขาย", dataKey: "sales", Comp: DiscountReasonWidget },
+  salesperson: { title: "ยอดขายรายพนักงาน", icon: <Users2 size={15} />, multi: true, category: "ยอดขาย", dataKey: "sales", Comp: SalesPersonWidget },
+  promotion: { title: "โปรโมชั่น & ช่องทางชำระเงิน", icon: <CreditCard size={15} />, multi: true, category: "ยอดขาย", dataKey: "tender", Comp: PromotionTenderWidget },
+  customermix: { title: "สัดส่วนลูกค้า", icon: <Users2 size={15} />, multi: true, category: "ยอดขาย", dataKey: "nationality", Comp: CustomerMixWidget },
   perfectbillftw: { title: "Perfect Bill FTW", icon: <TargetIcon size={15} />, multi: true, category: "เป้าหมาย", Comp: (p) => <PerfectBillWidget {...p} category="FTW" /> },
   perfectbillapp: { title: "Perfect Bill APP", icon: <TargetIcon size={15} />, multi: true, category: "เป้าหมาย", Comp: (p) => <PerfectBillWidget {...p} category="APP" /> },
   perfectbillacc: { title: "Perfect Bill ACC", icon: <TargetIcon size={15} />, multi: true, category: "เป้าหมาย", Comp: (p) => <PerfectBillWidget {...p} category="ACC" /> },
   hourlyreport: { title: "Hourly Report", icon: <ClipboardList size={15} />, multi: true, category: "เป้าหมาย", Comp: HourlyReportWidget },
   retailprod: { title: "Retailing Productivity", icon: <Zap size={15} />, multi: true, category: "เป้าหมาย", Comp: RetailingProductivityWidget },
+  staffreward: { title: "Staff Reward and Achievement", icon: <Trophy size={15} />, multi: true, category: "เป้าหมาย", dataKey: "reward", Comp: StaffRewardWidget },
   mallevent: { title: "Mall Event", icon: <Sparkles size={15} />, multi: true, category: "บันทึกหน้าร้าน", Comp: MallEventWidget },
   situation: { title: "สถานการณ์ร้านวันนี้", icon: <ClipboardList size={15} />, multi: true, category: "บันทึกหน้าร้าน", Comp: ({ ctx, widgetId }) => <TextNoteWidget ctx={ctx} storagePrefix={widgetId} placeholder="สรุปสถานการณ์ร้านวันนี้..." historyTitle="ประวัติสถานการณ์ร้าน" /> },
   competitor: { title: "Competitor Analysis", icon: <Trophy size={15} />, multi: true, category: "บันทึกหน้าร้าน", Comp: CompetitorAnalysisWidget },
@@ -2830,7 +3286,7 @@ const WIDGET_DEFS = {
   footfall: { title: "Footfall", icon: <Footprints size={15} />, category: "ข้อมูลเสริม", Comp: FootfallWidget },
   photos: { title: "รูปภาพหน้าร้าน", icon: <ImageIcon size={15} />, multi: true, category: "ข้อมูลเสริม", Comp: PhotoWidget },
   customwidget: { title: "Your Widget", icon: <SlidersHorizontal size={15} />, multi: true, category: "กำหนดเอง", Comp: CustomWidgetRenderer },
-  vatrefund: { title: "VAT Refund Tracker", icon: <Plane size={15} />, multi: true, category: "ข้อมูลเสริม", Comp: VatRefundWidget },
+  vatrefund: { title: "VAT Refund Tracker", icon: <Plane size={15} />, multi: true, category: "ข้อมูลเสริม", dataKey: "vatrefund", Comp: VatRefundWidget },
   document: { title: "Document", icon: <FileText size={15} />, multi: true, category: "เอกสาร", Comp: DocumentWidget },
 };
 const DEFAULT_ORDER = [];
@@ -2867,6 +3323,27 @@ function storeAbbr(store) {
   if (STORE_ABBR[store]) return STORE_ABBR[store];
   if (!store) return "XXX";
   return store.replace(/[^A-Za-z0-9]/g, "").slice(0, 5).toUpperCase() || "XXX";
+}
+const STORE_CODE_MAP = {
+  THA1001: "ICON SIAM",
+  THA1002: "MEGA BANGNA",
+  THA1003: "TERMINAL 21",
+  THA1004: "SIAM CENTER",
+  THA1005: "THE MALL NGAMWONGWAN",
+  THA1006: "FASHION ISLAND",
+  THA1007: "FUTURE PARK",
+  THA1008: "THE MALL BANGKAE",
+  THA1009: "CENTRAL RAMA 9",
+  THA1010: "CENTRAL PLAZA WESTGATE",
+  THA1011: "TERMINAL 21 PATTAYA",
+  THA1012: "CENTRAL RAMA 2",
+  THA1013: "CENTRAL EASTVILLE",
+  THA1014: "CENTRAL PINKLAO",
+  THA1015: "CENTRAL PARK DUSIT",
+};
+const STORE_NAME_TO_CODE = Object.fromEntries(Object.entries(STORE_CODE_MAP).map(([code, name]) => [name, code]));
+function storeCodeToName(code) {
+  return STORE_CODE_MAP[String(code || "").trim().toUpperCase()] || code;
 }
 const POSITION_LIST = ["AM", "PT", "SA", "SSA", "SP", "FM", "ASM", "SM"];
 const MANAGEMENT_POSITIONS = ["AM"]; // AM = full access to everything always, incl. YOUR SOURCE — the one safety net against lockout
@@ -2923,6 +3400,7 @@ function LoginScreen({ onLogin }) {
   const [regStore, setRegStore] = useState(STORE_LIST[0]);
   const [regPosition, setRegPosition] = useState(POSITION_LIST[0]);
   const [regGoal, setRegGoal] = useState("");
+  const [regSalesCode, setRegSalesCode] = useState("");
 
   const loadUsers = useCallback(async () => {
     setLoadingUsers(true);
@@ -2965,13 +3443,14 @@ function LoginScreen({ onLogin }) {
     if (!regPassword) { setError("ตั้งรหัสผ่านก่อน"); return; }
     if (regPassword.length < 4) { setError("รหัสผ่านต้องมีอย่างน้อย 4 ตัวอักษร"); return; }
     if (regPassword !== regPassword2) { setError("รหัสผ่านทั้งสองช่องไม่ตรงกัน"); return; }
+    if (!regSalesCode.trim()) { setError("กรอกรหัสพนักงาน (Sales Person Code) ก่อน"); return; }
     if (users.some((u) => u.nickname.toLowerCase() === regNickname.trim().toLowerCase())) {
       setError("ชื่อเล่นนี้มีคนใช้แล้ว ลองชื่ออื่น หรือเข้าสู่ระบบด้วยชื่อนี้แทน");
       return;
     }
     setBusy(true);
     const passwordHash = await hashPassword(regPassword);
-    const user = { id: `user_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, nickname: regNickname.trim(), passwordHash, store: regStore, position: regPosition, goal: regGoal.trim(), registeredAt: new Date().toISOString() };
+    const user = { id: `user_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, nickname: regNickname.trim(), passwordHash, store: regPosition === "AM" ? "ALL" : regStore, storeCode: regPosition === "AM" ? "" : (STORE_NAME_TO_CODE[regStore] || ""), salesPersonCode: regSalesCode.trim(), position: regPosition, goal: regGoal.trim(), registeredAt: new Date().toISOString() };
     try {
       await window.storage.set(USER_PREFIX + user.id, JSON.stringify(user), true);
       await window.storage.set(SESSION_KEY, JSON.stringify(user), false);
@@ -3015,7 +3494,7 @@ function LoginScreen({ onLogin }) {
               <>
                 <label className="field-label">ชื่อเล่นของคุณ</label>
                 <select value={selectedNickname} onChange={(e) => setSelectedNickname(e.target.value)}>
-                  {users.map((u) => <option key={u.id} value={u.nickname}>{u.nickname} · {u.store} · {u.position}</option>)}
+                  {users.map((u) => <option key={u.id} value={u.nickname}>{u.nickname} · {u.store === "ALL" ? "ทุกสาขา" : u.store} · {u.position}</option>)}
                 </select>
                 <label className="field-label">รหัสผ่าน</label>
                 <input type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} placeholder="รหัสผ่าน" onKeyDown={(e) => { if (e.key === "Enter") doLogin(); }} />
@@ -3034,14 +3513,22 @@ function LoginScreen({ onLogin }) {
             <input type="password" value={regPassword} onChange={(e) => setRegPassword(e.target.value)} placeholder="อย่างน้อย 4 ตัวอักษร" />
             <label className="field-label">ยืนยันรหัสผ่านอีกครั้ง</label>
             <input type="password" value={regPassword2} onChange={(e) => setRegPassword2(e.target.value)} placeholder="พิมพ์รหัสผ่านอีกครั้ง" />
-            <label className="field-label">สาขา</label>
-            <select value={regStore} onChange={(e) => setRegStore(e.target.value)}>
-              {STORE_LIST.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
             <label className="field-label">ตำแหน่ง</label>
             <select value={regPosition} onChange={(e) => setRegPosition(e.target.value)}>
               {POSITION_LIST.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
+            {regPosition === "AM" ? (
+              <div className="widget-note" style={{ marginBottom: ".8rem" }}>ตำแหน่ง AM ดูข้อมูลได้ทุกสาขา ไม่ต้องผูกกับสาขาใดสาขาหนึ่ง — ค่าเริ่มต้นจะเป็น "ทุกสาขา"</div>
+            ) : (
+              <>
+                <label className="field-label">สาขา</label>
+                <select value={regStore} onChange={(e) => setRegStore(e.target.value)}>
+                  {STORE_LIST.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </>
+            )}
+            <label className="field-label">รหัสพนักงาน (Sales Person Code) *จำเป็นต้องกรอก*</label>
+            <input type="text" value={regSalesCode} onChange={(e) => setRegSalesCode(e.target.value.toUpperCase())} placeholder="รหัสตรงกับที่ใช้ในระบบขายหน้าร้าน" />
             <label className="field-label">เป้าหมายที่คุณคิดว่าอยากทำให้สำเร็จคืออะไร</label>
             <textarea value={regGoal} onChange={(e) => setRegGoal(e.target.value)} placeholder="เช่น อยากทำยอดให้ถึงเป้าทุกเดือน, อยากขึ้นตำแหน่ง SSA..." />
             {error && <div className="login-error">{error}</div>}
@@ -3077,6 +3564,7 @@ const GLOBAL_STYLES = `
         .topnav-active .topnav-label{ color:var(--yellow); }
         .topnav-active .topnav-sub{ color:#C9C9C0; }
         .topnav-locked{ cursor:not-allowed; opacity:.45; }
+        .store-locked-badge{ background:#FCFCFA; border:1px solid var(--line); border-radius:8px; padding:.5rem .6rem; font-size:.85rem; font-weight:700; color:var(--text); }
         .topnav-locked .topnav-label{ color:var(--mute); }
 
         .soon-page{ max-width:640px; margin:4rem auto; text-align:center; padding:2rem; }
@@ -3090,6 +3578,7 @@ const GLOBAL_STYLES = `
         .mapping-card-soon .mapping-cols{ background:#1A1A1A; border-color:#2C2C2C; color:#B9B9B0; }
         .mapping-soon-box{ display:flex; align-items:center; gap:.5rem; background:#1A1A1A; border:1px dashed #3A3A36; border-radius:9px; padding:.7rem; color:var(--yellow); font-weight:700; font-size:.82rem; }
         .mapping-card-webhook{ border-color:var(--yellow-dark); }
+        .btn-danger-confirm{ background:#D4283F; color:#fff; border-color:#D4283F; }
         .authority-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:.5rem; }
         .authority-check{ display:flex; align-items:center; gap:.4rem; font-size:.82rem; background:#FCFCFA; border:1px solid var(--line); border-radius:8px; padding:.45rem .6rem; }
         .authority-widgets-head{ display:flex; justify-content:space-between; align-items:center; }
@@ -3117,6 +3606,48 @@ const GLOBAL_STYLES = `
         .rp-box-photo-slot{ display:flex; flex-direction:column; align-items:center; gap:.3rem; }
         .rp-box-photo-label{ font-size:.68rem; font-weight:700; color:var(--mute); }
         .rp-box-photo-slot .photo-thumb, .rp-box-photo-slot .photo-add{ width:90px; height:90px; }
+
+        .rw-filter-row{ display:flex; gap:1.2rem; flex-wrap:wrap; margin-bottom:.6rem; }
+        .rw-period-badge{ background:#FCFCFA; border:1px solid var(--line); border-radius:8px; padding:.5rem .7rem; font-size:.82rem; font-weight:700; }
+        .rw-podium{ display:flex; align-items:flex-end; justify-content:center; gap:1.2rem; margin:1.4rem 0 1.8rem; }
+        .rw-podium-slot{ display:flex; flex-direction:column; align-items:center; gap:.3rem; width:120px; }
+        .rw-podium-label-input{ text-align:center; border:none; background:none; font-weight:800; font-size:.85rem; width:100%; color:var(--text); }
+        .rw-podium-name{ font-weight:700; font-size:.85rem; text-align:center; word-break:break-word; }
+        .rw-podium-value{ font-family:'JetBrains Mono',monospace; font-weight:800; font-size:.85rem; }
+        .rw-podium-bar{ width:100%; border-radius:10px 10px 0 0; margin-top:.3rem; }
+        .rw-podium-1 .rw-podium-bar{ height:95px; background:var(--yellow); }
+        .rw-podium-2 .rw-podium-bar{ height:68px; background:#C9C9C0; }
+        .rw-podium-3 .rw-podium-bar{ height:48px; background:#CD7F32; }
+        .rw-race-track{ display:flex; flex-direction:column; gap:.7rem; }
+        .rw-race-lane{ display:grid; grid-template-columns:150px 1fr 110px; align-items:center; gap:.6rem; }
+        .rw-race-name{ font-size:.82rem; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .rw-race-lane-track{ position:relative; height:34px; background:repeating-linear-gradient(90deg,#F1F3F0,#F1F3F0 18px,#E7E7E2 18px,#E7E7E2 20px); border-radius:8px; border:1px solid var(--line); overflow:hidden; }
+        .rw-race-runner{ position:absolute; top:50%; transform:translateY(-50%); font-size:1.3rem; transition:left .6s ease; }
+        .rw-race-value{ font-family:'JetBrains Mono',monospace; font-weight:700; font-size:.8rem; text-align:right; }
+        .rw-hover-wrap{ position:relative; cursor:help; border-bottom:1px dotted var(--mute); }
+        .rw-tooltip{ position:absolute; z-index:60; top:100%; left:0; margin-top:.4rem; background:#111; color:#fff; padding:.6rem .75rem; border-radius:10px; font-size:.74rem; line-height:1.5; white-space:normal; width:max-content; max-width:260px; box-shadow:0 6px 18px rgba(0,0,0,.3); }
+        .rw-tooltip b{ color:var(--yellow); }
+        .rw-tooltip-list{ margin:.3rem 0 0; padding-left:1.1rem; }
+        .rw-tooltip-muted{ color:#999; margin-top:.3rem; }
+        .rw-seg-list{ display:flex; flex-direction:column; gap:.6rem; }
+        .rw-seg-row{ display:grid; grid-template-columns:150px 1fr 90px; align-items:center; gap:.6rem; }
+        .rw-seg-name{ font-size:.82rem; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .rw-seg-dots{ display:flex; flex-wrap:wrap; gap:.3rem; }
+        .rw-seg-dot{ width:16px; height:16px; border-radius:50%; border:2px solid var(--ink); box-sizing:border-box; }
+        .rw-seg-dot-ok{ background:#1FAA59; border-color:#1FAA59; }
+        .rw-seg-dot-no{ background:#D4283F; border-color:#D4283F; }
+        .rw-seg-pct{ font-family:'JetBrains Mono',monospace; font-weight:700; font-size:.78rem; text-align:right; }
+
+        .rw-scoreboard{ background:var(--ink); border-radius:14px; padding:1.1rem 1.2rem; }
+        .rw-scoreboard-title{ text-align:center; color:var(--yellow); font-family:'Space Grotesk',sans-serif; font-weight:800; letter-spacing:.06em; font-size:.95rem; margin-bottom:1rem; }
+        .rw-scoreboard-row{ border-top:1px solid #2A2A26; padding:.8rem 0; }
+        .rw-scoreboard-row:first-of-type{ border-top:none; }
+        .rw-scoreboard-cat{ color:#C9C9C0; font-weight:700; font-size:.78rem; text-transform:uppercase; letter-spacing:.04em; margin-bottom:.5rem; }
+        .rw-scoreboard-ranks{ display:grid; grid-template-columns:repeat(3,1fr); gap:.7rem; }
+        .rw-scoreboard-rank{ display:flex; flex-direction:column; align-items:center; gap:.15rem; background:#17171500; }
+        .rw-scoreboard-medal{ font-size:1.2rem; }
+        .rw-scoreboard-name{ color:#fff; font-weight:700; font-size:.82rem; text-align:center; }
+        .rw-scoreboard-value{ color:var(--yellow); font-family:'JetBrains Mono',monospace; font-weight:800; font-size:.8rem; }
 
         .task-alert{ display:flex; align-items:flex-start; gap:.6rem; background:var(--ink); color:var(--yellow); border-radius:14px; padding:.85rem 1rem; margin-bottom:1rem; font-size:.85rem; line-height:1.5; border:2px solid var(--yellow); animation:task-blink-border 1.3s ease-in-out infinite; }
         .task-alert-text b{ color:#fff; }
@@ -3273,6 +3804,7 @@ const GLOBAL_STYLES = `
         .widget-hide:hover{ background:#eee; color:#111; }
         .widget-body-wrap{ overflow:auto; }
         .widget-body{ padding:.9rem 1rem 1rem; }
+        .widget-upload-footer{ margin-top:.7rem; padding-top:.5rem; border-top:1px dashed var(--line); font-size:.68rem; color:var(--mute); }
         .widget-resize-handle{ position:absolute; right:2px; bottom:2px; width:16px; height:16px; display:flex; align-items:center; justify-content:center; color:var(--mute); cursor:nwse-resize; border-radius:4px; }
         .widget-resize-handle:hover{ color:var(--ink); background:#FFF6D6; }
         .widget-note{ font-size:.68rem; color:var(--mute); margin-top:.6rem; line-height:1.5; }
@@ -3493,11 +4025,22 @@ function Dashboard({ session, onLogout }) {
   const [targets, setTargets] = useState([]);
   const [nationality, setNationality] = useState([]);
   const [vatRefundRows, setVatRefundRows] = useState([]);
+  const [rewardLeadership, setRewardLeadership] = useState([]);
+  const [rewardTransactions, setRewardTransactions] = useState([]);
+  const [rewardPeriod, setRewardPeriod] = useState("");
   const [tasks, setTasks] = useState([]);
   const [authority, setAuthority] = useState({});
+  const [uploadTimestamps, setUploadTimestamps] = useState({});
   const [ready, setReady] = useState(false);
 
-  const [store, setStore] = useState(session?.store && STORE_LIST.includes(session.store) ? session.store : "ALL");
+  const canSwitchStore = !session?.position || MANAGEMENT_POSITIONS.includes(session.position);
+  const [store, setStore] = useState(() => {
+    if (session?.store && STORE_LIST.includes(session.store)) return session.store;
+    return "ALL";
+  });
+  useEffect(() => {
+    if (!canSwitchStore && session?.store) setStore(session.store);
+  }, [canSwitchStore, session]);
   const [from, setFrom] = useState("2026-08-01");
   const [to, setTo] = useState("2026-08-10");
   const [footfall, setFootfallState] = useState(0);
@@ -3517,7 +4060,7 @@ function Dashboard({ session, onLogout }) {
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [favorites, setFavorites] = useState([]);
 
-  const fileCurrentRef = useRef(null), fileLastYearRef = useRef(null), fileTenderRef = useRef(null), fileTargetRef = useRef(null), fileNationalityRef = useRef(null), fileVatRefundRef = useRef(null);
+  const fileCurrentRef = useRef(null), fileLastYearRef = useRef(null), fileTenderRef = useRef(null), fileTargetRef = useRef(null), fileNationalityRef = useRef(null), fileVatRefundRef = useRef(null), fileRewardRef = useRef(null);
 
   const showToast = useCallback((type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 4200); }, []);
 
@@ -3529,8 +4072,23 @@ function Dashboard({ session, onLogout }) {
       try { const v = await window.storage.get("data:targets", true); if (v?.value) setTargets(JSON.parse(v.value)); } catch (e) {}
       try { const v = await window.storage.get("data:nationality", true); if (v?.value) setNationality(JSON.parse(v.value)); } catch (e) {}
       try { const v = await window.storage.get("data:vatrefund", true); if (v?.value) setVatRefundRows(JSON.parse(v.value)); } catch (e) {}
+      try { const v = await window.storage.get("data:rewardLeadership", true); if (v?.value) setRewardLeadership(JSON.parse(v.value)); } catch (e) {}
+      try { const rows = await loadChunked("data:rewardTransactions"); if (rows.length) setRewardTransactions(rows); } catch (e) {}
+      try { const v = await window.storage.get("data:rewardPeriod", true); if (v?.value) setRewardPeriod(JSON.parse(v.value)); } catch (e) {}
       try { const v = await window.storage.get("data:tasks", true); if (v?.value) setTasks(JSON.parse(v.value)); } catch (e) {}
       try { const v = await window.storage.get(AUTHORITY_KEY, true); if (v?.value) setAuthority(JSON.parse(v.value)); } catch (e) {}
+      try {
+        const list = await window.storage.list(UPLOAD_META_PREFIX, true);
+        const keys = list?.keys || [];
+        const out = {};
+        for (const k of keys) {
+          try {
+            const v = await window.storage.get(k, true);
+            if (v?.value) { const shortKey = k.startsWith(UPLOAD_META_PREFIX) ? k.slice(UPLOAD_META_PREFIX.length) : k; out[shortKey] = JSON.parse(v.value).uploadedAt; }
+          } catch (e) {}
+        }
+        setUploadTimestamps(out);
+      } catch (e) {}
       try { const v = await window.storage.get("layout", false); if (v?.value) { const p = JSON.parse(v.value); if (p.order) setWidgetOrder(p.order); if (p.hidden) setHidden(p.hidden); if (p.scales) setScales(p.scales); } } catch (e) {}
       try { const v = await window.storage.get("favoriteWidgets", false); if (v?.value) setFavorites(JSON.parse(v.value)); } catch (e) {}
       try { const v = await window.storage.get("settings:webhookUrl", false); if (v?.value) setWebhookUrl(JSON.parse(v.value)); } catch (e) {}
@@ -3557,6 +4115,9 @@ function Dashboard({ session, onLogout }) {
   const persistTargets = useCallback(async (t) => { try { await window.storage.set("data:targets", JSON.stringify(t), true); } catch (e) {} }, []);
   const persistNationality = useCallback(async (n) => { try { await window.storage.set("data:nationality", JSON.stringify(n), true); } catch (e) {} }, []);
   const persistVatRefund = useCallback(async (rows) => { try { await window.storage.set("data:vatrefund", JSON.stringify(rows), true); } catch (e) {} }, []);
+  const persistRewardLeadership = useCallback(async (rows) => { try { await window.storage.set("data:rewardLeadership", JSON.stringify(rows), true); } catch (e) {} }, []);
+  const persistRewardTransactions = useCallback(async (rows) => { await saveChunked("data:rewardTransactions", rows); }, []);
+  const persistRewardPeriod = useCallback(async (p) => { try { await window.storage.set("data:rewardPeriod", JSON.stringify(p), true); } catch (e) {} }, []);
   const saveWebhookUrl = useCallback(async (url) => {
     setWebhookUrl(url);
     try { await window.storage.set("settings:webhookUrl", JSON.stringify(url), false); showToast("success", "บันทึกลิงก์ Webhook แล้ว"); } catch (e) { showToast("error", "บันทึกไม่สำเร็จ"); }
@@ -3576,6 +4137,11 @@ function Dashboard({ session, onLogout }) {
   const saveAuthority = useCallback(async (next) => {
     setAuthority(next);
     try { await window.storage.set(AUTHORITY_KEY, JSON.stringify(next), true); } catch (e) {}
+  }, []);
+  const touchUpload = useCallback(async (datasetKey) => {
+    const iso = new Date().toISOString();
+    setUploadTimestamps((prev) => ({ ...prev, [datasetKey]: iso }));
+    await recordUploadTimestamp(datasetKey);
   }, []);
   const persistLayout = useCallback(async (order, hid, sc) => { try { await window.storage.set("layout", JSON.stringify({ order, hidden: hid, scales: sc }), false); } catch (e) {} }, []);
 
@@ -3605,6 +4171,7 @@ function Dashboard({ session, onLogout }) {
         };
         persistData(next); return next;
       });
+      touchUpload("sales");
       showToast("success", `อัปโหลดข้อมูลปีนี้สำเร็จ (${agg.kpi.length} วัน-สาขา)`);
     } else {
       setDemoMode(false);
@@ -3619,9 +4186,10 @@ function Dashboard({ session, onLogout }) {
         };
         persistLy(next, false); return next;
       });
+      touchUpload("lastyear");
       showToast("success", `อัปโหลดข้อมูลปีที่แล้วสำเร็จ (${agg.kpi.length} วัน-สาขา)`);
     }
-  }, [showToast, persistData, persistLy]);
+  }, [showToast, persistData, persistLy, touchUpload]);
 
   const handleTenderUpload = useCallback(async (fileList, target) => {
     const files = Array.from(fileList || []); if (files.length === 0) return;
@@ -3634,8 +4202,9 @@ function Dashboard({ session, onLogout }) {
     } else {
       setTenderLastYear((prev) => { const next = mergeByKey(prev, records, (r) => `${r.store}__${r.date}`); persistTender(tenderCurrent, next); return next; });
     }
+    touchUpload("tender");
     showToast("success", `อัปโหลดข้อมูล Tender สำเร็จ (${records.length} วัน-สาขา)`);
-  }, [showToast, persistTender, tenderCurrent, tenderLastYear]);
+  }, [showToast, persistTender, tenderCurrent, tenderLastYear, touchUpload]);
 
   const handleTargetUpload = useCallback(async (fileList) => {
     const files = Array.from(fileList || []); if (files.length === 0) return;
@@ -3644,8 +4213,9 @@ function Dashboard({ session, onLogout }) {
     const { records, error } = parseTargetRows(allRows);
     if (error) { showToast("error", error); return; }
     setTargets((prev) => { const next = mergeByKey(prev, records, (r) => `${r.store}__${r.month}`); persistTargets(next); return next; });
+    touchUpload("target");
     showToast("success", `อัปโหลดไฟล์ Target สำเร็จ (${records.length} รายการ)`);
-  }, [showToast, persistTargets]);
+  }, [showToast, persistTargets, touchUpload]);
 
   const handleNationalityUpload = useCallback(async (fileList) => {
     const files = Array.from(fileList || []); if (files.length === 0) return;
@@ -3654,8 +4224,9 @@ function Dashboard({ session, onLogout }) {
     const { records, error } = parseNationalityRows(allRows);
     if (error) { showToast("error", error); return; }
     setNationality((prev) => { const next = mergeByKey(prev, records, (r) => `${r.store}__${r.date}__${r.nationality}`); persistNationality(next); return next; });
+    touchUpload("nationality");
     showToast("success", `อัปโหลดไฟล์สัดส่วนลูกค้าสำเร็จ (${records.length} รายการ)`);
-  }, [showToast, persistNationality]);
+  }, [showToast, persistNationality, touchUpload]);
 
   const handleVatRefundUpload = useCallback(async (fileList) => {
     const files = Array.from(fileList || []); if (files.length === 0) return;
@@ -3664,8 +4235,44 @@ function Dashboard({ session, onLogout }) {
     if (allRows.length === 0) { showToast("error", "ไม่พบข้อมูลในไฟล์"); return; }
     setVatRefundRows(allRows);
     persistVatRefund(allRows);
+    touchUpload("vatrefund");
     showToast("success", `อัปโหลดไฟล์ VAT Refund สำเร็จ (${allRows.length} แถว) — เปิดดูที่ widget VAT Refund Tracker ได้เลย`);
-  }, [showToast, persistVatRefund]);
+  }, [showToast, persistVatRefund, touchUpload]);
+
+  const handleRewardUpload = useCallback(async (fileList) => {
+    const files = Array.from(fileList || []); if (files.length === 0) return;
+    const file = files[0];
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array", cellDates: true });
+      const { leadership, transactions, periodLabel } = rwParseWorkbook(wb);
+      if (leadership.length === 0 && transactions.length === 0) {
+        showToast("error", "หาคอลัมน์ที่ต้องการในไฟล์ไม่เจอ (Store Code/Employee/Job Title หรือ Store/Brand/Sales Date/SKU Code) — เช็คว่าแท็บ/หัวคอลัมน์ในไฟล์ตรงกับที่ระบบคาดไว้ไหม");
+        return;
+      }
+      showToast("success", `กำลังประมวลผลไฟล์ (${leadership.length} รายการพนักงาน, ${transactions.length} รายการบิล) — รอสักครู่...`);
+      if (leadership.length > 0) {
+        const nextLeadership = mergeByKey(rewardLeadership, leadership, (r) => `${r.storeCode}__${r.employee}__${r.period}`);
+        setRewardLeadership(nextLeadership);
+        await persistRewardLeadership(nextLeadership);
+      }
+      if (transactions.length > 0) {
+        const nextTransactions = mergeByKey(rewardTransactions, transactions, (r) => `${r.store}__${r.receiptNo}__${r.sku}__${r.salesPersonCode}`);
+        setRewardTransactions(nextTransactions);
+        await persistRewardTransactions(nextTransactions);
+      }
+      if (periodLabel) { setRewardPeriod(periodLabel); persistRewardPeriod(periodLabel); }
+      await touchUpload("reward");
+      const missingParts = [];
+      if (leadership.length === 0) missingParts.push("ไม่พบตาราง Sales Leadership");
+      if (transactions.length === 0) missingParts.push("ไม่พบตารางรายการขาย");
+      if (missingParts.length > 0) {
+        showToast("error", `อัปโหลดสำเร็จบางส่วน (${leadership.length} รายการพนักงาน, ${transactions.length} รายการบิล) — ${missingParts.join(", ")}`);
+      } else {
+        showToast("success", `บันทึกข้อมูล Staff Reward and Achievement เสร็จสมบูรณ์ (${leadership.length} รายการพนักงาน, ${transactions.length} รายการบิล)`);
+      }
+    } catch (e) { showToast("error", `อ่านไฟล์ไม่สำเร็จ: ${e.message}`); }
+  }, [showToast, persistRewardLeadership, persistRewardTransactions, persistRewardPeriod, rewardLeadership, rewardTransactions, touchUpload]);
 
   const toggleDemo = useCallback(() => {
     if (demoMode) {
@@ -3758,7 +4365,7 @@ function Dashboard({ session, onLogout }) {
   const visibleWidgets = widgetOrder.filter((id) => !hidden.includes(id) && isAllowedWidget(authority, session?.position, widgetType(id)));
   const hiddenWidgets = widgetOrder.filter((id) => hidden.includes(id));
 
-  const ctx = { store, from, to, dates, lyDates, data, lyData, tenderCurrent, tenderLastYear, targets, nationality, vatRefundRows, tasks, saveTask, deleteTask, stores, curTotals, lyTotals, hasLY, footfall, setFootfall, showToast, demoMode, session, addInstance, authority };
+  const ctx = { store, from, to, dates, lyDates, data, lyData, tenderCurrent, tenderLastYear, targets, nationality, vatRefundRows, tasks, saveTask, deleteTask, stores, curTotals, lyTotals, hasLY, footfall, setFootfall, showToast, demoMode, session, addInstance, authority, rewardLeadership, rewardTransactions, rewardPeriod, uploadTimestamps };
 
   const submitReport = useCallback(async () => {
     setSubmitting(true);
@@ -3821,12 +4428,13 @@ function Dashboard({ session, onLogout }) {
         <MappingToolPage
           onBack={() => setPage("build")}
           demoMode={demoMode} toggleDemo={toggleDemo}
-          fileCurrentRef={fileCurrentRef} fileLastYearRef={fileLastYearRef} fileTenderRef={fileTenderRef} fileTargetRef={fileTargetRef} fileNationalityRef={fileNationalityRef} fileVatRefundRef={fileVatRefundRef}
-          handleSalesUpload={handleSalesUpload} handleTenderUpload={handleTenderUpload} handleTargetUpload={handleTargetUpload} handleNationalityUpload={handleNationalityUpload} handleVatRefundUpload={handleVatRefundUpload}
-          data={data} tenderCurrent={tenderCurrent} targets={targets} nationality={nationality} vatRefundRows={vatRefundRows}
+          fileCurrentRef={fileCurrentRef} fileLastYearRef={fileLastYearRef} fileTenderRef={fileTenderRef} fileTargetRef={fileTargetRef} fileNationalityRef={fileNationalityRef} fileVatRefundRef={fileVatRefundRef} fileRewardRef={fileRewardRef}
+          handleSalesUpload={handleSalesUpload} handleTenderUpload={handleTenderUpload} handleTargetUpload={handleTargetUpload} handleNationalityUpload={handleNationalityUpload} handleVatRefundUpload={handleVatRefundUpload} handleRewardUpload={handleRewardUpload}
+          data={data} tenderCurrent={tenderCurrent} targets={targets} nationality={nationality} vatRefundRows={vatRefundRows} rewardLeadership={rewardLeadership} rewardTransactions={rewardTransactions} rewardPeriod={rewardPeriod}
           webhookUrl={webhookUrl} saveWebhookUrl={saveWebhookUrl}
           tasks={tasks} saveTask={saveTask} deleteTask={deleteTask} stores={stores}
           authority={authority} saveAuthority={saveAuthority}
+          uploadTimestamps={uploadTimestamps}
         />
       ) : (
       <div className="layout">
@@ -3840,7 +4448,7 @@ function Dashboard({ session, onLogout }) {
             <div className="profile-avatar">{(session?.nickname || "?").slice(0, 1).toUpperCase()}</div>
             <div className="profile-info">
               <div className="profile-name">{session?.nickname}</div>
-              <div className="profile-meta">{session?.store} · {session?.position}</div>
+              <div className="profile-meta">{session?.store === "ALL" ? "ทุกสาขา" : session?.store} · {session?.position}</div>
             </div>
             <button className="profile-logout" onClick={onLogout} title="ออกจากระบบ"><X size={13} /></button>
           </div>
@@ -3862,11 +4470,15 @@ function Dashboard({ session, onLogout }) {
 
           <div className="panel">
             <div className="panel-title"><Calendar size={13} /> ตัวกรอง</div>
-            <label className="field-label">สาขา</label>
-            <select value={store} onChange={(e) => setStore(e.target.value)}>
-              <option value="ALL">ทุกสาขา ({stores.length})</option>
-              {stores.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            <label className="field-label">สาขา{!canSwitchStore && <Lock size={11} style={{ marginLeft: ".3rem", verticalAlign: "-1px" }} />}</label>
+            {canSwitchStore ? (
+              <select value={store} onChange={(e) => setStore(e.target.value)}>
+                <option value="ALL">ทุกสาขา ({stores.length})</option>
+                {stores.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            ) : (
+              <div className="store-locked-badge" title="เฉพาะตำแหน่ง AM เท่านั้นที่สลับดูสาขาอื่นได้">{store || "(ยังไม่ระบุสาขา)"}</div>
+            )}
             <label className="field-label">จากวันที่</label>
             <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
             <label className="field-label">ถึงวันที่</label>
@@ -3920,13 +4532,16 @@ function Dashboard({ session, onLogout }) {
               const def = WIDGET_DEFS[type];
               if (!def) return null;
               const Comp = def.Comp;
-              const span2 = type === "sku" || type === "breakdown" || type === "overview" || type === "perfectbillftw" || type === "perfectbillapp" || type === "perfectbillacc" || type === "hourlyreport" || type === "competitor" || type === "vatrefund" || type === "document" || type === "reflection" || type === "achievements" || type === "kpi" || type === "retailprod";
+              const span2 = type === "sku" || type === "breakdown" || type === "overview" || type === "perfectbillftw" || type === "perfectbillapp" || type === "perfectbillacc" || type === "hourlyreport" || type === "competitor" || type === "vatrefund" || type === "document" || type === "reflection" || type === "achievements" || type === "kpi" || type === "retailprod" || type === "staffreward";
               const sameType = visibleWidgets.filter((w) => widgetType(w) === type);
               const title = sameType.length > 1 ? `${def.title} #${sameType.indexOf(id) + 1}` : def.title;
               return (
                 <div className={span2 ? "widget-span2" : ""} key={id}>
                   <WidgetShell id={id} title={title} icon={def.icon} onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop} onHide={hideWidget} dragging={dragId === id} scale={scales[id]} onScaleChange={updateScale}>
                     <Comp ctx={ctx} widgetId={id} />
+                    {def.dataKey && ctx.uploadTimestamps?.[def.dataKey] && (
+                      <div className="widget-upload-footer no-print">🕒 อัปเดตข้อมูลล่าสุด: {fmtUploadedAt(ctx.uploadTimestamps[def.dataKey])}</div>
+                    )}
                   </WidgetShell>
                 </div>
               );
@@ -4036,7 +4651,11 @@ function CloudStorageSettingsCard() {
   );
 }
 
-function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLastYearRef, fileTenderRef, fileTargetRef, fileNationalityRef, fileVatRefundRef, handleSalesUpload, handleTenderUpload, handleTargetUpload, handleNationalityUpload, handleVatRefundUpload, data, tenderCurrent, targets, nationality, vatRefundRows, webhookUrl, saveWebhookUrl, tasks, saveTask, deleteTask, stores, authority, saveAuthority }) {
+function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLastYearRef, fileTenderRef, fileTargetRef, fileNationalityRef, fileVatRefundRef, fileRewardRef, handleSalesUpload, handleTenderUpload, handleTargetUpload, handleNationalityUpload, handleVatRefundUpload, handleRewardUpload, data, tenderCurrent, targets, nationality, vatRefundRows, rewardLeadership, rewardTransactions, rewardPeriod, webhookUrl, saveWebhookUrl, tasks, saveTask, deleteTask, stores, authority, saveAuthority, uploadTimestamps }) {
+  const lastUpload = (key) => {
+    const t = fmtUploadedAt(uploadTimestamps?.[key]);
+    return t ? <div className="mapping-status">🕒 อัปโหลดล่าสุด: {t}</div> : null;
+  };
   const [urlInput, setUrlInput] = useState(webhookUrl || "");
   useEffect(() => { setUrlInput(webhookUrl || ""); }, [webhookUrl]);
 
@@ -4066,17 +4685,7 @@ function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLas
 
         <CloudStorageSettingsCard />
 
-        <div className="mapping-card mapping-card-soon">
-          <div className="panel-title"><Users2 size={13} /> บัญชีผู้ใช้งาน (User Accounts)</div>
-          <div className="mapping-cols">สร้าง/จัดการบัญชีให้พนักงานแต่ละสาขาลงทะเบียนเข้าใช้งานเว็บนี้เอง พร้อมสิทธิ์การเข้าถึงตามสาขา</div>
-          <div className="mapping-soon-box">
-            <Sparkles size={18} />
-            <span>เร็วๆ นี้ — Coming Soon</span>
-          </div>
-          <button className="btn btn-outline btn-block" disabled style={{ marginTop: ".6rem", opacity: .55, cursor: "not-allowed" }}>
-            <Plus size={14} /> สร้างบัญชีใหม่
-          </button>
-        </div>
+        <UserAccountsAdmin />
 
         <div className="mapping-card">
           <div className="panel-title"><Upload size={13} /> ยอดขาย (แท็บ "2026" / "2025")</div>
@@ -4087,6 +4696,7 @@ function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLas
           </div>
           <input ref={fileCurrentRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleSalesUpload(e.target.files, "current"); e.target.value = ""; }} />
           <div className="mapping-status">มีข้อมูลแล้ว {new Set(data.kpi.map((r) => `${r.store}__${r.date}`)).size} วัน-สาขา</div>
+          {lastUpload("sales")}
 
           <label className="field-label" style={{ marginTop: "1rem" }}>ข้อมูลปีที่แล้ว</label>
           <div className="drop" onClick={() => fileLastYearRef.current?.click()}>
@@ -4106,6 +4716,7 @@ function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLas
           </div>
           <input ref={fileTenderRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleTenderUpload(e.target.files, "current"); e.target.value = ""; }} />
           <div className="mapping-status">มีข้อมูลแล้ว {tenderCurrent.length} วัน-สาขา</div>
+          {lastUpload("tender")}
         </div>
 
         <div className="mapping-card">
@@ -4116,6 +4727,7 @@ function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLas
           </div>
           <input ref={fileTargetRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleTargetUpload(e.target.files); e.target.value = ""; }} />
           <div className="mapping-status">มีข้อมูลแล้ว {targets.length} รายการ</div>
+          {lastUpload("target")}
         </div>
 
         <div className="mapping-card">
@@ -4126,6 +4738,7 @@ function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLas
           </div>
           <input ref={fileNationalityRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleNationalityUpload(e.target.files); e.target.value = ""; }} />
           <div className="mapping-status">มีข้อมูลแล้ว {nationality.length} รายการ</div>
+          {lastUpload("nationality")}
         </div>
 
         <div className="mapping-card">
@@ -4136,6 +4749,18 @@ function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLas
           </div>
           <input ref={fileVatRefundRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleVatRefundUpload(e.target.files); e.target.value = ""; }} />
           <div className="mapping-status">มีข้อมูลแล้ว {vatRefundRows.length} แถว</div>
+          {lastUpload("vatrefund")}
+        </div>
+
+        <div className="mapping-card">
+          <div className="panel-title"><Trophy size={13} /> Staff Reward and Achievement</div>
+          <div className="mapping-cols">อัปโหลดไฟล์นี้ทุกวัน — ระบบจะหาตาราง "Sales Leadership" (Store Code, Employee, Job Title, # Seg, Success Segments, % Success, Sales Actual ฯลฯ) และตารางรายการขาย (Store, Brand, Sales Date, SKU Code ฯลฯ) ในไฟล์เดียวกันอัตโนมัติ ไม่ว่าจะอยู่แท็บไหน</div>
+          <div className="drop" onClick={() => fileRewardRef.current?.click()}>
+            <FileSpreadsheet size={18} color="var(--yellow-dark)" /><div className="drop-label">คลิกเพื่อเลือกไฟล์ — .xlsx</div>
+          </div>
+          <input ref={fileRewardRef} type="file" accept=".xlsx,.xls" hidden onChange={(e) => { handleRewardUpload(e.target.files); e.target.value = ""; }} />
+          <div className="mapping-status">มีข้อมูลพนักงาน {rewardLeadership.length} รายการ · รายการขาย {rewardTransactions.length} แถว{rewardPeriod && ` · ช่วง ${rewardPeriod}`}</div>
+          {lastUpload("reward")}
         </div>
       </div>
 
@@ -4154,10 +4779,12 @@ function DocUploadAdmin({ docType, label, icon }) {
   const [file, setFile] = useState(null);
   const [saving, setSaving] = useState(false);
   const [items, setItems] = useState([]);
+  const [lastUploaded, setLastUploaded] = useState(null);
   const fileRef = useRef(null);
 
   const load = useCallback(async () => {
     try {
+      try { const v = await window.storage.get(UPLOAD_META_PREFIX + docType, true); if (v?.value) setLastUploaded(JSON.parse(v.value).uploadedAt); } catch (e) {}
       const res = await window.storage.list(prefix, true);
       const keys = res?.keys || [];
       const out = [];
@@ -4186,6 +4813,7 @@ function DocUploadAdmin({ docType, label, icon }) {
       const item = { id, dateUpload, category: category.trim(), fileName: file.name, fileDataUrl: ev.target.result, uploadedAt: new Date().toISOString(), reads: [] };
       try {
         await window.storage.set(prefix + id, JSON.stringify(item), true);
+        await recordUploadTimestamp(docType);
         setCategory(""); setFile(null);
         load();
       } catch (e) { alert("บันทึกไม่สำเร็จ"); }
@@ -4222,6 +4850,7 @@ function DocUploadAdmin({ docType, label, icon }) {
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: ".7rem" }}>
         <button className="btn btn-primary" onClick={submit} disabled={saving}><Save size={14} /> อัปโหลด</button>
       </div>
+      {lastUploaded && <div className="mapping-status">🕒 อัปโหลดล่าสุด: {fmtUploadedAt(lastUploaded)}</div>}
 
       {items.length > 0 && (
         <div style={{ marginTop: "1rem", paddingTop: ".8rem", borderTop: "1px solid var(--line)" }}>
@@ -4233,6 +4862,68 @@ function DocUploadAdmin({ docType, label, icon }) {
                 <div className="task-meta"><span>{it.fileName}</span><span>อัปโหลด: {it.dateUpload}</span><span>อ่านแล้ว {(it.reads || []).length} คน</span></div>
               </div>
               <button className="btn btn-outline" onClick={() => remove(it.id)}>ลบ</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UserAccountsAdmin() {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await window.storage.list(USER_PREFIX, true);
+      const keys = list?.keys || [];
+      const out = [];
+      for (const k of keys) { try { const v = await window.storage.get(k, true); if (v?.value) out.push({ key: k, ...JSON.parse(v.value) }); } catch (e) {} }
+      out.sort((a, b) => a.nickname.localeCompare(b.nickname));
+      setUsers(out);
+    } catch (e) {}
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const removeUser = async (key) => {
+    try { await window.storage.delete(key, true); load(); } catch (e) {}
+  };
+
+  const clearAll = async () => {
+    if (!confirmClearAll) { setConfirmClearAll(true); return; }
+    for (const u of users) { try { await window.storage.delete(u.key, true); } catch (e) {} }
+    setConfirmClearAll(false);
+    load();
+  };
+
+  return (
+    <div className="mapping-card">
+      <div className="panel-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span><Users2 size={13} /> บัญชีผู้ใช้งาน (User Accounts)</span>
+        {users.length > 0 && (
+          <button className={`btn btn-outline no-print${confirmClearAll ? " btn-danger-confirm" : ""}`} onClick={clearAll}>
+            <X size={13} /> {confirmClearAll ? "กดอีกครั้งเพื่อยืนยันลบทั้งหมด" : "ล้างรายชื่อทั้งหมด"}
+          </button>
+        )}
+      </div>
+      <div className="mapping-cols">รายชื่อทุกคนที่สมัครสมาชิกไว้ — ลบรายบุคคล หรือล้างทั้งหมดได้ (เช่น ลบบัญชีทดสอบที่ค้างไว้)</div>
+      {loading ? (
+        <div className="empty-hint">กำลังโหลด...</div>
+      ) : users.length === 0 ? (
+        <div className="empty-hint">ยังไม่มีใครสมัครสมาชิกไว้</div>
+      ) : (
+        <div>
+          {users.map((u) => (
+            <div className="task-admin-row" key={u.key}>
+              <div>
+                <b>{u.nickname}</b>
+                <div className="task-meta"><span>{u.store === "ALL" ? "ทุกสาขา" : u.store}</span><span>{u.position}</span><span>รหัส: {u.salesPersonCode || "-"}</span></div>
+              </div>
+              <button className="btn btn-outline" onClick={() => removeUser(u.key)}>ลบ</button>
             </div>
           ))}
         </div>
@@ -4324,7 +5015,7 @@ function TaskManagerAdmin({ tasks, saveTask, deleteTask, stores }) {
       <label className="field-label">มอบหมายให้ (เลือกได้ว่าจะให้ทั้งสาขา หรือคนเดียว)</label>
       <select value={form.assignedTo} onChange={(e) => setForm((f) => ({ ...f, assignedTo: e.target.value }))}>
         <option value="ALL">ทุกคนในสาขา</option>
-        {usersInStore.map((u) => <option key={u.id} value={u.nickname}>{u.nickname} · {u.store} · {u.position}</option>)}
+        {usersInStore.map((u) => <option key={u.id} value={u.nickname}>{u.nickname} · {u.store === "ALL" ? "ทุกสาขา" : u.store} · {u.position}</option>)}
       </select>
       {usersInStore.length === 0 && <div className="widget-note">ยังไม่มีพนักงานสมัครสมาชิกไว้สำหรับสาขานี้ — จะมอบหมายให้ "ทุกคนในสาขา" แทนไปก่อนได้</div>}
 
