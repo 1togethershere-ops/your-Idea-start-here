@@ -367,6 +367,7 @@ function rwParseWorkbook(wb) {
   const leadership = [];
   const transactions = [];
   let periodLabel = "";
+  const seenRows = new Set(); // dedupe across ALL sheets — some exports repeat the same transaction table in multiple tabs (e.g. "ASICS INCENTIVE" + "STAFF PERFORMANCE"), so this must not reset per-sheet
 
   for (const sheetName of wb.SheetNames) {
     const sheet = wb.Sheets[sheetName];
@@ -419,7 +420,6 @@ function rwParseWorkbook(wb) {
         qty: rwFindColFlexible(header, ["Sales Qty", "Sale Qty", "Sale QTY", "Sales QTY"]),
         net: rwFindColFlexible(header, ["Net Sales", "Net Sale"]),
       };
-      const seenRows = new Set(); // dedupe exact-duplicate bill lines (same receipt+sku+qty repeated in the source file)
       for (let i = tIdx + 1; i < rows.length; i++) {
         const row = rows[i] || [];
         const rawRow = rowsRaw[i] || [];
@@ -3035,7 +3035,7 @@ function RwHoverName({ name, tooltip }) {
   const [show, setShow] = useState(false);
   return (
     <span className="rw-hover-wrap" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)} onClick={() => setShow((s) => !s)}>
-      {name}
+      <span className="rw-hover-text">{name}</span>
       {show && <div className="rw-tooltip">{tooltip}</div>}
     </span>
   );
@@ -3052,6 +3052,7 @@ function RwRaceLane({ rank, name, pctFinal, tooltip, valueLabel }) {
     <div className="rw-race-lane">
       <div className="rw-race-name"><RwHoverName name={`${rank}. ${name}`} tooltip={tooltip} /></div>
       <div className="rw-race-lane-track">
+        <div className="rw-race-bar" style={{ width: `${pct}%` }} />
         <div className="rw-race-runner" style={{ left: `calc(${pct}% - 14px)` }}>🏃</div>
       </div>
       <div className="rw-race-value">{valueLabel}</div>
@@ -3119,7 +3120,13 @@ function StaffRewardWidget({ ctx }) {
   const rows = useMemo(() => (rewardType === "all" ? [] : computeRows(rewardType)), [rewardType, computeRows]);
   const allBoard = useMemo(() => {
     if (rewardType !== "all") return [];
-    return REWARD_TYPES.filter((t) => t.key !== "all").map((t) => ({ label: t.label, rows: computeRows(t.key).slice(0, 3) }));
+    return REWARD_TYPES.filter((t) => t.key !== "all").map((t) => {
+      const full = computeRows(t.key);
+      let total = null;
+      if (t.key === "salesPerformance") total = { label: "ยอดขายร้านรวม", value: full.reduce((s, r) => s + r.value, 0), unit: "บาท" };
+      if (t.key === "asicsIncentive") total = { label: "รวมคู่ Asics ทั้งหมด", value: full.reduce((s, r) => s + (r.qty || 0), 0), unit: "คู่" };
+      return { key: t.key, label: t.label, rows: full.slice(0, 3), total };
+    });
   }, [rewardType, computeRows]);
 
   const maxValue = rows.length ? Math.max(...rows.map((r) => r.value)) : 0;
@@ -3128,8 +3135,8 @@ function StaffRewardWidget({ ctx }) {
 
   const fmtVal = (r) => (r.unit === "%" ? `${r.value.toFixed(1)}%` : `${num(r.value)} บาท`);
 
-  const tooltipFor = (r) => {
-    if (rewardType === "salesPerformance") {
+  const tooltipFor = (r, forType = rewardType) => {
+    if (forType === "salesPerformance") {
       const pct = r.totalBills > 0 ? ((r.billCount || 0) / r.totalBills) * 100 : 0;
       return (
         <div>
@@ -3138,19 +3145,19 @@ function StaffRewardWidget({ ctx }) {
         </div>
       );
     }
-    if (rewardType === "leadershipSegment" && r.raw) {
+    if (forType === "leadershipSegment" && r.raw) {
       return (
         <div>
           <b>{r.name}</b>
           <div>Sale Actual: {num(r.raw.salesActual)} บาท</div>
           <div>Sale Trans: {num(r.raw.salesTrans)}</div>
           <div>ATV: {num(r.raw.atv)}</div>
-          <div>UPT: {num(r.raw.upt)}</div>
+          <div>UPT: {(r.raw.upt || 0).toFixed(2)}</div>
           <div>CR: {r.raw.convPct != null ? `${r.raw.convPct.toFixed(1)}%` : "-"}</div>
         </div>
       );
     }
-    if (rewardType === "asicsIncentive" && r.details) {
+    if (forType === "asicsIncentive" && r.details) {
       return (
         <div>
           <b>{r.name}</b>
@@ -3193,7 +3200,10 @@ function StaffRewardWidget({ ctx }) {
           <div className="rw-scoreboard-title">ALL REWARDS AND ACHIEVEMENT</div>
           {allBoard.map((cat, i) => (
             <div className="rw-scoreboard-row" key={i}>
-              <div className="rw-scoreboard-cat">{cat.label}</div>
+              <div className="rw-scoreboard-cat">
+                {cat.label}
+                {cat.total && <span className="rw-scoreboard-cat-total"> · {cat.total.label}: {num(cat.total.value)} {cat.total.unit}</span>}
+              </div>
               <div className="rw-scoreboard-ranks">
                 {[0, 1, 2].map((idx) => {
                   const r = cat.rows[idx];
@@ -3203,8 +3213,15 @@ function StaffRewardWidget({ ctx }) {
                       <span className="rw-scoreboard-medal">{medal}</span>
                       {r ? (
                         <>
-                          <span className="rw-scoreboard-name">{r.name}</span>
+                          <span className="rw-scoreboard-name"><RwHoverName name={r.name} tooltip={tooltipFor(r, cat.key)} /></span>
                           <span className="rw-scoreboard-value">{r.unit === "%" ? `${r.value.toFixed(1)}%` : `${num(r.value)} บาท`}</span>
+                          {cat.key === "leadershipSegment" && r.raw && (
+                            <div className="rw-scoreboard-extra">
+                              <div>ATV: {num(r.raw.atv)}</div>
+                              <div>UPT: {(r.raw.upt || 0).toFixed(2)}</div>
+                              <div>CR: {r.raw.convPct != null ? `${r.raw.convPct.toFixed(1)}%` : "-"}</div>
+                            </div>
+                          )}
                         </>
                       ) : <span className="rw-scoreboard-name">—</span>}
                     </div>
@@ -3631,18 +3648,20 @@ const GLOBAL_STYLES = `
         .rw-podium-3 .rw-podium-bar{ height:48px; background:#CD7F32; }
         .rw-race-track{ display:flex; flex-direction:column; gap:.7rem; }
         .rw-race-lane{ display:grid; grid-template-columns:150px 1fr 110px; align-items:center; gap:.6rem; }
-        .rw-race-name{ font-size:.82rem; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .rw-race-lane-track{ position:relative; height:34px; background:repeating-linear-gradient(90deg,#F1F3F0,#F1F3F0 18px,#E7E7E2 18px,#E7E7E2 20px); border-radius:8px; border:1px solid var(--line); overflow:hidden; }
-        .rw-race-runner{ position:absolute; top:50%; transform:translateY(-50%); font-size:1.3rem; transition:left .6s ease; }
+        .rw-race-name{ font-size:.82rem; font-weight:700; overflow:visible; }
+        .rw-race-lane-track{ position:relative; height:34px; background:#F1F3F0; border-radius:8px; border:1px solid var(--line); overflow:hidden; }
+        .rw-race-bar{ position:absolute; top:0; bottom:0; left:0; background:linear-gradient(90deg,var(--yellow-dark),var(--yellow)); transition:width .6s ease; z-index:1; }
+        .rw-race-runner{ position:absolute; top:50%; transform:translateY(-50%); font-size:1.3rem; transition:left .6s ease; z-index:2; }
         .rw-race-value{ font-family:'JetBrains Mono',monospace; font-weight:700; font-size:.8rem; text-align:right; }
-        .rw-hover-wrap{ position:relative; cursor:help; border-bottom:1px dotted var(--mute); }
+        .rw-hover-wrap{ position:relative; cursor:help; }
+        .rw-hover-text{ display:inline-block; max-width:150px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; vertical-align:bottom; border-bottom:1px dotted var(--mute); }
         .rw-tooltip{ position:absolute; z-index:60; top:100%; left:0; margin-top:.4rem; background:#111; color:#fff; padding:.6rem .75rem; border-radius:10px; font-size:.74rem; line-height:1.5; white-space:normal; width:max-content; max-width:260px; box-shadow:0 6px 18px rgba(0,0,0,.3); }
         .rw-tooltip b{ color:var(--yellow); }
         .rw-tooltip-list{ margin:.3rem 0 0; padding-left:1.1rem; }
         .rw-tooltip-muted{ color:#999; margin-top:.3rem; }
         .rw-seg-list{ display:flex; flex-direction:column; gap:.6rem; }
         .rw-seg-row{ display:grid; grid-template-columns:150px 1fr 90px; align-items:center; gap:.6rem; }
-        .rw-seg-name{ font-size:.82rem; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .rw-seg-name{ font-size:.82rem; font-weight:700; overflow:visible; }
         .rw-seg-dots{ display:flex; flex-wrap:wrap; gap:.3rem; }
         .rw-seg-dot{ width:16px; height:16px; border-radius:50%; border:2px solid var(--ink); box-sizing:border-box; }
         .rw-seg-dot-ok{ background:#1FAA59; border-color:#1FAA59; }
@@ -3654,6 +3673,8 @@ const GLOBAL_STYLES = `
         .rw-scoreboard-row{ border-top:1px solid #2A2A26; padding:.8rem 0; }
         .rw-scoreboard-row:first-of-type{ border-top:none; }
         .rw-scoreboard-cat{ color:#C9C9C0; font-weight:700; font-size:.78rem; text-transform:uppercase; letter-spacing:.04em; margin-bottom:.5rem; }
+        .rw-scoreboard-cat-total{ color:var(--yellow); text-transform:none; letter-spacing:0; font-weight:800; }
+        .rw-scoreboard-extra{ margin-top:.3rem; font-size:.66rem; color:#B9B9B0; line-height:1.5; }
         .rw-scoreboard-ranks{ display:grid; grid-template-columns:repeat(3,1fr); gap:.7rem; }
         .rw-scoreboard-rank{ display:flex; flex-direction:column; align-items:center; gap:.15rem; background:#17171500; }
         .rw-scoreboard-medal{ font-size:1.2rem; }
