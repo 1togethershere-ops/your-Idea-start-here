@@ -10,7 +10,7 @@ import {
   AlertCircle, CheckCircle2, Calendar, FileSpreadsheet, X, History, Sparkles,
   Plus, Image as ImageIcon, Users2, Tag, Percent, CreditCard, Target as TargetIcon,
   Smile, Frown, Camera, Footprints, ChevronDown, SlidersHorizontal, ClipboardList,
-  Trophy, Flame, Star, Zap, Medal, Plane, FileText, Lock, Search,
+  Trophy, Flame, Star, Zap, Medal, Plane, FileText, Lock, Search, Crown, UserCircle, Rocket, Contact as IdCard,
 } from "lucide-react";
 
 /* ==================================================================== */
@@ -3106,6 +3106,7 @@ function RetailingProductivityWidget({ ctx }) {
 /* ==================================================================== */
 /* Staff Reward and Achievement — podium + race-track leaderboard         */
 /* ==================================================================== */
+const MONTHS_TH = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const REWARD_TYPES = [
   { key: "all", label: "All Rewards and Achievement" },
   { key: "salesPerformance", label: "Sale Performance" },
@@ -3181,9 +3182,57 @@ function RwSegmentDots({ total, success }) {
   );
 }
 
-function StaffRewardWidget({ ctx }) {
-  const [rewardType, setRewardType] = useState("salesPerformance");
-  const [podiumLabels, setPodiumLabels] = useState(["🥇 อันดับ 1", "🥈 อันดับ 2", "🥉 อันดับ 3"]);
+const SM_CONFIRM_CODE = "SM1234"; // placeholder PIN gating Hall of Fame entries — change freely, or ask to make this configurable per store
+
+function RwHexagonChart({ stats }) {
+  const size = 240, center = size / 2, radius = 90;
+  const labels = ["Sale Actual", "Sale Trans", "ATV", "UPT", "CR", "Success %"];
+  const keys = ["saleActual", "saleTrans", "atv", "upt", "cr", "success"];
+  const getXY = (percent, index, total) => {
+    const angle = (Math.PI * 2 * index) / total - Math.PI / 2;
+    const r = (percent / 100) * radius;
+    return { x: center + r * Math.cos(angle), y: center + r * Math.sin(angle) };
+  };
+  const points = keys.map((k, i) => { const { x, y } = getXY(stats[k] || 0, i, 6); return `${x},${y}`; }).join(" ");
+  const gridPolys = [20, 40, 60, 80, 100].map((p) => keys.map((_, i) => { const { x, y } = getXY(p, i, 6); return `${x},${y}`; }).join(" "));
+  return (
+    <div className="relative flex justify-center items-center w-full h-[300px]">
+      <svg width={size} height={size} className="overflow-visible">
+        {gridPolys.map((pts, i) => <polygon key={i} points={pts} fill="none" stroke="#3f3f46" strokeWidth="1" />)}
+        {keys.map((_, i) => { const { x, y } = getXY(100, i, 6); return <line key={i} x1={center} y1={center} x2={x} y2={y} stroke="#3f3f46" strokeWidth="1" />; })}
+        <polygon points={points} fill="rgba(250, 204, 21, 0.4)" stroke="#facc15" strokeWidth="2" className="animate-pulse" />
+        {labels.map((label, i) => { const { x, y } = getXY(118, i, 6); return <text key={i} x={x} y={y} fill="#a1a1aa" fontSize="9.5" fontWeight="bold" textAnchor="middle" alignmentBaseline="middle">{label}</text>; })}
+      </svg>
+    </div>
+  );
+}
+
+function StaffRewardWidget({ ctx, widgetId }) {
+  const storagePrefix = widgetId || "staffreward";
+  const [rewardType, setRewardType] = useState("all"); // "all" | "salesPerformance" | "leadershipSegment" | "asicsIncentive"
+  const [activeView, setActiveView] = useState("main"); // "main" | "winners" | "rising_stars"
+  const [winnerSpaceList, setWinnerSpaceList] = useState([]);
+  const [risingStarList, setRisingStarList] = useState([]);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addingTo, setAddingTo] = useState("");
+  const [selectedPerson, setSelectedPerson] = useState(null);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [selectedProfile, setSelectedProfile] = useState(null);
+  const [formMonth, setFormMonth] = useState(MONTHS_TH[new Date(ctx.to).getUTCMonth()] || MONTHS_TH[0]);
+  const [formYear, setFormYear] = useState(String(new Date(ctx.to).getUTCFullYear()));
+  const [smCode, setSmCode] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try { const v = await window.storage.get(`${storagePrefix}:winners`, true); if (v?.value) setWinnerSpaceList(JSON.parse(v.value)); } catch (e) {}
+      try { const v = await window.storage.get(`${storagePrefix}:risingstars`, true); if (v?.value) setRisingStarList(JSON.parse(v.value)); } catch (e) {}
+    })();
+  }, [storagePrefix]);
+  const persistHallOfFame = useCallback(async (winners, risers) => {
+    try { await window.storage.set(`${storagePrefix}:winners`, JSON.stringify(winners), true); } catch (e) {}
+    try { await window.storage.set(`${storagePrefix}:risingstars`, JSON.stringify(risers), true); } catch (e) {}
+  }, [storagePrefix]);
 
   const leadershipFiltered = useMemo(
     () => ctx.rewardLeadership.filter((r) => !r.isStoreTotal && (ctx.store === "ALL" || storeCodeToName(r.storeCode) === ctx.store)),
@@ -3193,7 +3242,7 @@ function StaffRewardWidget({ ctx }) {
     const dateSet = new Set(ctx.dates);
     return ctx.rewardTransactions.filter((t) => {
       if (ctx.store !== "ALL" && t.store.trim().toUpperCase() !== ctx.store.trim().toUpperCase()) return false;
-      if (t.receiptType && t.receiptType.trim().toUpperCase() === "REFUND") return false; // exclude refunded bills from every reward calculation
+      if (t.receiptType && t.receiptType.trim().toUpperCase() === "REFUND") return false;
       const iso = rwDateToISO(t.salesDate);
       return iso && dateSet.has(iso);
     });
@@ -3210,8 +3259,6 @@ function StaffRewardWidget({ ctx }) {
     if (type === "leadershipSegment") {
       return leadershipFiltered.map((r) => ({ name: r.employee, value: r.successPct ?? 0, unit: "%", raw: r })).sort((a, b) => b.value - a.value);
     }
-    // Sale Performance — built straight from the transaction sheet, grouped by
-    // Sales Person Code (falls back to the Sales Person name if no code).
     const map = new Map();
     const totalBillSet = new Set();
     txFiltered.forEach((t) => {
@@ -3232,166 +3279,277 @@ function StaffRewardWidget({ ctx }) {
   const rows = useMemo(() => (rewardType === "all" ? [] : computeRows(rewardType)), [rewardType, computeRows]);
   const allBoard = useMemo(() => {
     if (rewardType !== "all") return [];
-    return REWARD_TYPES.filter((t) => t.key !== "all").map((t) => {
-      const full = computeRows(t.key);
-      let total = null;
-      if (t.key === "salesPerformance") total = { label: "ยอดขายร้านรวม", value: full.reduce((s, r) => s + r.value, 0), unit: "บาท" };
-      if (t.key === "asicsIncentive") total = { label: "รวมคู่ Asics ทั้งหมด", value: full.reduce((s, r) => s + (r.qty || 0), 0), unit: "คู่" };
-      return { key: t.key, label: t.label, rows: full.slice(0, 3), total };
-    });
+    return REWARD_TYPES.filter((t) => t.key !== "all").map((t) => ({ key: t.key, label: t.label, rows: computeRows(t.key) }));
   }, [rewardType, computeRows]);
-
   const maxValue = rows.length ? Math.max(...rows.map((r) => r.value)) : 0;
-  const top3 = [rows[0], rows[1], rows[2]];
-  const podiumOrder = [{ r: top3[1], rank: 2 }, { r: top3[0], rank: 1 }, { r: top3[2], rank: 3 }];
-
   const fmtVal = (r) => (r.unit === "%" ? `${r.value.toFixed(1)}%` : `${num(r.value)} บาท`);
 
   const tooltipFor = (r, forType = rewardType) => {
     if (forType === "salesPerformance") {
       const pct = r.totalBills > 0 ? ((r.billCount || 0) / r.totalBills) * 100 : 0;
-      return (
-        <div>
-          <b>{r.name}</b>
-          <div>{num(r.billCount || 0)} Bill/Success Mix{pct.toFixed(0)}%</div>
-        </div>
-      );
+      return `${num(r.billCount || 0)} Bill/Success Mix${pct.toFixed(0)}%`;
     }
-    if (forType === "leadershipSegment" && r.raw) {
-      return (
-        <div>
-          <b>{r.name}</b>
-          <div>Sale Actual: {num(r.raw.salesActual)} บาท</div>
-          <div>Sale Trans: {num(r.raw.salesTrans)}</div>
-          <div>ATV: {num(r.raw.atv)}</div>
-          <div>UPT: {(r.raw.upt || 0).toFixed(2)}</div>
-          <div>CR: {r.raw.convPct != null ? `${r.raw.convPct.toFixed(1)}%` : "-"}</div>
-        </div>
-      );
-    }
-    if (forType === "asicsIncentive" && r.details) {
-      return (
-        <div>
-          <b>{r.name}</b>
-          {r.details.length > 0 ? (
-            <ul className="rw-tooltip-list">
-              {r.details.slice(0, 10).map((d, i) => <li key={i}>{d.salesDate} · {d.sku} · {d.qty} ชิ้น</li>)}
-            </ul>
-          ) : <div className="rw-tooltip-muted">ไม่พบรายการ</div>}
-        </div>
-      );
-    }
-    return <div><b>{r.name}</b><div>{fmtVal(r)}</div></div>;
+    if (forType === "leadershipSegment" && r.raw) return `ATV ${num(r.raw.atv)} · UPT ${(r.raw.upt || 0).toFixed(2)} · CR ${r.raw.convPct != null ? r.raw.convPct.toFixed(1) + "%" : "-"}`;
+    if (forType === "asicsIncentive") return `${num(r.qty || 0)} คู่`;
+    return fmtVal(r);
   };
 
-  return (
-    <div>
-      <div className="rw-filter-row no-print">
-        <div>
-          <label className="field-label">สาขา</label>
-          <div className="store-locked-badge">{ctx.store === "ALL" ? "ทุกสาขา" : ctx.store}</div>
-        </div>
-        <div>
-          <label className="field-label">Reward and Incentive</label>
-          <select value={rewardType} onChange={(e) => setRewardType(e.target.value)}>
-            {REWARD_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="field-label">Data Range (กรองจริงตามนี้)</label>
-          <div className="rw-period-badge">{rwIsoToDMY(ctx.from)} — {rwIsoToDMY(ctx.to)}</div>
-        </div>
-      </div>
-      {ctx.rewardPeriod && <div className="widget-note" style={{ marginBottom: ".5rem" }}>ไฟล์ที่อัปโหลดล่าสุดระบุช่วง Sales Leadership ไว้ที่: {ctx.rewardPeriod}</div>}
-      {rewardType === "asicsIncentive" && (
-        <div className="widget-note" style={{ marginBottom: ".8rem" }}>Asics Incentive: คู่ละ 100 บาท เริ่มวันที่ 1/09/2026 ร่วมรายการทั้งราคาเต็มและราคาลด · เส้นทางแบ่งเป็น 20 ช่อง ช่องละ 5 คู่ (กรองตามสาขาและช่วงวันที่ที่เลือกในตัวกรองหลักด้านซ้าย)</div>
-      )}
+  // Finds this person's Leadership row (best-effort name match) and turns it into
+  // 6 real, relative (0-100) axes for the radar chart — never fabricated stats.
+  const maxLeadership = useMemo(() => ({
+    saleActual: Math.max(1, ...leadershipFiltered.map((r) => r.salesActual || 0)),
+    saleTrans: Math.max(1, ...leadershipFiltered.map((r) => r.salesTrans || 0)),
+    atv: Math.max(1, ...leadershipFiltered.map((r) => r.atv || 0)),
+    upt: Math.max(1, ...leadershipFiltered.map((r) => r.upt || 0)),
+  }), [leadershipFiltered]);
+  const statsForPerson = (name) => {
+    const norm = rwNormalizeName(name);
+    const hit = leadershipFiltered.find((r) => rwNormalizeName(r.employee) === norm);
+    if (!hit) return null;
+    return {
+      saleActual: Math.round(((hit.salesActual || 0) / maxLeadership.saleActual) * 100),
+      saleTrans: Math.round(((hit.salesTrans || 0) / maxLeadership.saleTrans) * 100),
+      atv: Math.round(((hit.atv || 0) / maxLeadership.atv) * 100),
+      upt: Math.round(((hit.upt || 0) / maxLeadership.upt) * 100),
+      cr: Math.round(hit.convPct || 0),
+      success: Math.round(hit.successPct || 0),
+      raw: hit,
+    };
+  };
 
-      {rewardType === "all" ? (
-        <div className="rw-scoreboard">
-          <div className="rw-scoreboard-title">ALL REWARDS AND ACHIEVEMENT</div>
-          {allBoard.map((cat, i) => (
-            <div className="rw-scoreboard-row" key={i}>
-              <div className="rw-scoreboard-cat">
-                {cat.label}
-                {cat.total && <span className="rw-scoreboard-cat-total"> · {cat.total.label}: {num(cat.total.value)} {cat.total.unit}</span>}
-              </div>
-              <div className="rw-scoreboard-ranks">
-                {[0, 1, 2].map((idx) => {
-                  const r = cat.rows[idx];
-                  const medal = idx === 0 ? "🥇" : idx === 1 ? "🥈" : "🥉";
-                  return (
-                    <div className="rw-scoreboard-rank" key={idx}>
-                      <span className="rw-scoreboard-medal">{medal}</span>
-                      {r ? (
-                        <>
-                          <span className="rw-scoreboard-name"><RwHoverName name={r.name} tooltip={tooltipFor(r, cat.key)} /></span>
-                          <span className="rw-scoreboard-value">{r.unit === "%" ? `${r.value.toFixed(1)}%` : `${num(r.value)} บาท`}</span>
-                          {cat.key === "leadershipSegment" && r.raw && (
-                            <div className="rw-scoreboard-extra">
-                              <div>ATV: {num(r.raw.atv)}</div>
-                              <div>UPT: {(r.raw.upt || 0).toFixed(2)}</div>
-                              <div>CR: {r.raw.convPct != null ? `${r.raw.convPct.toFixed(1)}%` : "-"}</div>
-                            </div>
-                          )}
-                        </>
-                      ) : <span className="rw-scoreboard-name">—</span>}
-                    </div>
-                  );
-                })}
+  const rankedFor = (type) => computeRows(type).map((r, i) => ({ ...r, rank: i + 1, type }));
+
+  const handleAddClick = (person) => {
+    setSelectedPerson(person);
+    setAddingTo(person.rank === 1 ? "WINNER SPACE" : "RISING STAR");
+    setShowAddModal(true); setSmCode(""); setErrorMsg("");
+  };
+  const handleProfileClick = (person) => { setSelectedProfile(person); setShowProfileModal(true); };
+  const submitAddRecord = () => {
+    if (smCode !== SM_CONFIRM_CODE) { setErrorMsg(`รหัสยืนยันไม่ถูกต้อง (Hint: ${SM_CONFIRM_CODE})`); return; }
+    const record = { ...selectedPerson, store: ctx.store, month: formMonth, year: formYear, dateAdded: new Date().toISOString() };
+    if (addingTo === "WINNER SPACE") {
+      const next = [...winnerSpaceList, record]; setWinnerSpaceList(next); persistHallOfFame(next, risingStarList);
+    } else {
+      const next = [...risingStarList, record]; setRisingStarList(next); persistHallOfFame(winnerSpaceList, next);
+    }
+    setShowAddModal(false);
+  };
+
+  const Podium = ({ title, type }) => {
+    const list = rankedFor(type);
+    const top3 = [list[0], list[1], list[2]];
+    if (!top3[0] && !top3[1] && !top3[2]) return null;
+    const order = [{ p: top3[1], crownClass: "text-gray-400", nameClass: "text-gray-300", barClass: "from-gray-300 to-gray-500", h: "h-[100px]", crownSize: 30 },
+      { p: top3[0], crownClass: "text-yellow-400 drop-shadow-[0_0_10px_rgba(250,204,21,0.8)]", nameClass: "text-yellow-400 text-lg", barClass: "from-yellow-400 to-yellow-600", h: "h-[140px]", crownSize: 45, big: true },
+      { p: top3[2], crownClass: "text-amber-600", nameClass: "text-amber-600", barClass: "from-amber-600 to-amber-800", h: "h-[80px]", crownSize: 30 }];
+    return (
+      <div className="bg-zinc-950 p-6 rounded-xl border border-zinc-800 mb-6 shadow-xl">
+        <h2 className="text-yellow-500 font-bold tracking-widest text-lg mb-8 uppercase flex items-center gap-2"><Medal size={20} /> {title}</h2>
+        <div className="flex flex-col sm:flex-row justify-center items-end gap-4 sm:gap-8 h-auto sm:h-[300px] mt-10">
+          {order.map(({ p, crownClass, nameClass, barClass, h, crownSize, big }, i) => (
+            <div key={i} className={`flex flex-col items-center group relative w-full sm:w-1/3 ${big ? "z-10 -mt-8 sm:mt-0" : ""}`}>
+              {p && (
+                <div className="absolute -top-16 opacity-0 group-hover:opacity-100 transition-opacity bg-zinc-800 text-white text-xs p-2 rounded-lg whitespace-nowrap z-10 shadow-lg border border-zinc-600">
+                  <span className="text-yellow-400 font-bold">{p.name}</span><br />{tooltipFor(p, type)}
+                </div>
+              )}
+              <Crown size={crownSize} className={`mb-2 drop-shadow-md ${crownClass}`} />
+              <p className={`font-bold text-center mb-1 ${nameClass}`}>อันดับ {p?.rank ?? "-"}<br /><span className="text-white text-xl">{p?.name || "—"}</span></p>
+              {p && (
+                <div className="flex gap-2 mb-2">
+                  <button onClick={() => handleProfileClick(p)} className="p-1.5 bg-zinc-800 rounded hover:bg-zinc-700 text-blue-400 transition-colors"><IdCard size={16} /></button>
+                  <button onClick={() => handleAddClick(p)} className="p-1.5 bg-zinc-800 rounded hover:bg-yellow-600 text-yellow-400 hover:text-white transition-colors"><Plus size={16} /></button>
+                </div>
+              )}
+              <p className="text-gray-400 text-sm mb-2">{p ? fmtVal(p) : ""}</p>
+              <div className={`w-full sm:w-28 ${h} bg-gradient-to-b ${barClass} rounded-t-xl shadow-lg border-t border-x border-yellow-300/40 relative overflow-hidden`}>
+                <div className="absolute inset-0 bg-white/20 transform -skew-x-12 -translate-x-full group-hover:animate-shine"></div>
               </div>
             </div>
           ))}
-          {allBoard.every((cat) => cat.rows.length === 0) && <div className="empty-hint">ยังไม่มีข้อมูลสำหรับตัวกรองนี้ — อัปโหลดไฟล์ที่ YOUR SOURCE ก่อน</div>}
         </div>
-      ) : rows.length === 0 ? (
-        <div className="empty-hint">ยังไม่มีข้อมูลสำหรับตัวกรองนี้ — อัปโหลดไฟล์ที่ YOUR SOURCE ก่อน</div>
+      </div>
+    );
+  };
+
+  const FullList = ({ type }) => {
+    const list = rankedFor(type);
+    if (list.length === 0) return null;
+    const max = Math.max(...list.map((r) => (type === "asicsIncentive" ? (r.qty || 0) : r.value)));
+    return (
+      <div className="bg-zinc-950 p-6 rounded-xl border border-zinc-800 shadow-xl mt-4 space-y-4">
+        {list.map((r) => {
+          const pct = max > 0 ? Math.min(100, ((type === "asicsIncentive" ? (r.qty || 0) : r.value) / max) * 100) : 0;
+          return (
+            <div key={r.rank} className="flex flex-col md:flex-row items-center gap-4 bg-zinc-900 p-3 rounded-lg hover:bg-zinc-800 transition-colors border border-transparent hover:border-zinc-700 group">
+              <div className="w-full md:w-48 flex items-center gap-3">
+                <span className="font-bold text-gray-400 w-6">{r.rank}.</span>
+                <div className="font-bold text-white uppercase truncate flex-1">{r.name}</div>
+                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button onClick={() => handleProfileClick(r)} className="p-1 hover:text-blue-400 text-zinc-500 transition-colors" title="View Profile"><IdCard size={18} /></button>
+                  {r.rank <= 3 && <button onClick={() => handleAddClick(r)} className={`p-1 transition-colors ${r.rank === 1 ? "hover:text-gray-200 text-zinc-500" : "hover:text-yellow-400 text-zinc-500"}`} title="Add to Hall of Fame"><Plus size={18} /></button>}
+                </div>
+              </div>
+              <div className="flex-1 w-full relative h-6 bg-zinc-800 rounded-full overflow-visible flex items-center">
+                <div className={`h-full rounded-full transition-all duration-1000 ${r.rank === 1 ? "bg-yellow-400" : r.rank === 2 ? "bg-gray-300" : r.rank === 3 ? "bg-amber-600" : "bg-yellow-600/70"}`} style={{ width: `${pct}%` }}></div>
+                <span className="absolute text-xl" style={{ left: `calc(${pct}% - 12px)`, top: "-4px" }}>🏃</span>
+              </div>
+              <div className="w-full md:w-40 text-right font-black text-white text-md tracking-wider">{fmtVal(r)}</div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const HallOfFameGrid = ({ list, kind }) => (
+    list.length === 0 ? (
+      <div className="text-center py-20 text-zinc-500 bg-zinc-950 rounded-xl border border-zinc-800">
+        {kind === "WINNER SPACE" ? <Rocket size={48} className="mx-auto mb-4 opacity-20" /> : <Star size={48} className="mx-auto mb-4 opacity-20" />}
+        <p className="text-xl">ยังไม่มีการบันทึกไว้</p>
+      </div>
+    ) : (
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {list.map((record, i) => (
+          <div key={i} className={`bg-gradient-to-br p-6 rounded-xl border shadow-xl relative overflow-hidden group ${kind === "WINNER SPACE" ? "from-zinc-800 to-zinc-950 border-gray-500" : "from-zinc-900 to-zinc-950 border-yellow-600"}`}>
+            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-30 transition-opacity">{kind === "WINNER SPACE" ? <Rocket size={64} className="text-gray-300" /> : <Star size={64} className="text-yellow-400" />}</div>
+            <div className="text-xs text-yellow-600 font-bold mb-1 uppercase">{record.store === "ALL" ? "ทุกสาขา" : record.store}</div>
+            <div className="text-xl font-black text-white mb-4">{record.month} {record.year}</div>
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 bg-zinc-800 rounded-full flex items-center justify-center shadow-lg border-2 border-yellow-500"><UserCircle size={40} className="text-yellow-500" /></div>
+              <div>
+                <div className="text-gray-400 text-sm font-bold">RANK #{record.rank}</div>
+                <div className="text-2xl font-black text-white">{record.name}</div>
+                <button onClick={() => handleProfileClick(record)} className="text-xs mt-1 bg-zinc-700 px-2 py-1 rounded text-yellow-400 hover:text-white flex items-center gap-1"><IdCard size={12} /> View Stats</button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  );
+
+  const anyData = ctx.rewardLeadership.length > 0 || ctx.rewardTransactions.length > 0;
+  const profileStats = selectedProfile ? statsForPerson(selectedProfile.name) : null;
+
+  return (
+    <div className="bg-black text-gray-200 font-sans rounded-xl overflow-hidden -m-4 p-4">
+      <style>{`
+        @keyframes shine { 100% { transform: translateX(150%) skewX(-12deg); } }
+        .animate-shine { animation: shine 1.5s ease-in-out infinite; }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in-up { animation: fadeInUp 0.6s ease-out forwards; }
+      `}</style>
+
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-zinc-800 mb-6 pb-4">
+        <h1 className="text-xl sm:text-2xl font-black flex items-center gap-3 text-white tracking-wide uppercase">
+          <Trophy className="text-yellow-400" size={26} /> Staff Reward & <span className="text-yellow-400">Achievement</span>
+        </h1>
+        <div className="flex gap-4 items-center bg-zinc-900 px-4 py-2 rounded-lg border border-zinc-800">
+          <Calendar size={16} className="text-yellow-400" />
+          <span className="text-sm font-semibold">{rwIsoToDMY(ctx.from)} — {rwIsoToDMY(ctx.to)}</span>
+          <span className="text-xs text-zinc-500">· {ctx.store === "ALL" ? "ทุกสาขา" : ctx.store}</span>
+        </div>
+      </header>
+
+      {!anyData ? (
+        <div className="text-center py-20 text-zinc-500 bg-zinc-950 rounded-xl border border-zinc-800">ยังไม่มีข้อมูล — อัปโหลดไฟล์ที่ YOUR SOURCE ก่อน</div>
       ) : (
         <>
-          <div className="rw-podium">
-            {podiumOrder.map(({ r, rank }, i) => (
-              <div className={`rw-podium-slot rw-podium-${rank}`} key={i}>
-                <input className="rw-podium-label-input no-print" value={podiumLabels[rank - 1]} onChange={(e) => { const next = [...podiumLabels]; next[rank - 1] = e.target.value; setPodiumLabels(next); }} />
-                {r ? (<>
-                  <div className="rw-podium-name"><RwHoverName name={r.name} tooltip={tooltipFor(r)} /></div>
-                  <div className="rw-podium-value">{fmtVal(r)}</div>
-                </>) : <div className="rw-podium-name">—</div>}
-                <div className="rw-podium-bar" />
-              </div>
-            ))}
+          <div className="mb-8 flex flex-col sm:flex-row justify-start gap-4 no-print">
+            <button onClick={() => setActiveView(activeView === "winners" ? "main" : "winners")}
+              className={`relative overflow-hidden group w-full sm:w-[280px] h-[64px] px-6 py-3 rounded-2xl font-black text-lg uppercase tracking-widest flex items-center justify-center gap-3 transition-all duration-300 border-2 ${activeView === "winners" ? "border-gray-200 bg-gradient-to-r from-gray-100 via-gray-300 to-gray-400 text-black scale-105" : "border-zinc-500 bg-gradient-to-r from-zinc-800 via-zinc-700 to-zinc-800 text-gray-300 hover:scale-105"}`}>
+              <Rocket size={26} fill={activeView === "winners" ? "#000" : "transparent"} /><span>WINNER SPACE</span>
+            </button>
+            <button onClick={() => setActiveView(activeView === "rising_stars" ? "main" : "rising_stars")}
+              className={`relative overflow-hidden group w-full sm:w-[300px] h-[64px] px-6 py-3 rounded-2xl font-black text-lg uppercase tracking-widest flex items-center justify-center gap-3 transition-all duration-300 border-2 ${activeView === "rising_stars" ? "border-yellow-200 bg-gradient-to-r from-yellow-300 via-yellow-500 to-yellow-600 text-black scale-105" : "border-zinc-500 bg-gradient-to-r from-zinc-800 via-zinc-700 to-zinc-800 text-yellow-500 hover:scale-105"}`}>
+              <Star size={26} fill={activeView === "rising_stars" ? "#000" : "transparent"} /><span>RISING STAR</span>
+            </button>
           </div>
 
-          {rewardType === "leadershipSegment" ? (
-            <div className="rw-seg-list">
-              {rows.map((r, i) => (
-                <div className="rw-seg-row" key={i}>
-                  <div className="rw-seg-name"><RwHoverName name={`${i + 1}. ${r.name}`} tooltip={tooltipFor(r)} /></div>
-                  <RwSegmentDots total={r.raw?.segTotal || 0} success={r.raw?.segSuccess || 0} />
-                  <div className="rw-seg-pct">{r.raw?.segTotal ? `${r.raw.segSuccess}/${r.raw.segTotal}` : "-"} · {r.value.toFixed(1)}%</div>
-                </div>
-              ))}
+          {activeView === "main" && (
+            <div>
+              <div className="flex justify-end mb-4 no-print">
+                <select value={rewardType} onChange={(e) => setRewardType(e.target.value)} className="bg-zinc-950 border border-zinc-700 text-white px-4 py-2 rounded focus:outline-none focus:border-yellow-400 w-full sm:w-auto font-semibold">
+                  {REWARD_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+                </select>
+              </div>
+              {(rewardType === "all" || rewardType === "salesPerformance") && <div className="mb-12"><Podium title="SALE PERFORMANCE" type="salesPerformance" /><FullList type="salesPerformance" /></div>}
+              {(rewardType === "all" || rewardType === "leadershipSegment") && <div className="mb-12"><Podium title="LEADERSHIP SEGMENT" type="leadershipSegment" /><FullList type="leadershipSegment" /></div>}
+              {(rewardType === "all" || rewardType === "asicsIncentive") && <div className="mb-12"><Podium title="ASICS INCENTIVE" type="asicsIncentive" /><FullList type="asicsIncentive" /></div>}
             </div>
-          ) : (
-            <div className="rw-race-track">
-              {rows.map((r, i) => {
-                const isAsics = rewardType === "asicsIncentive";
-                const pct = isAsics
-                  ? (Math.min(RW_SLOT_COUNT, Math.ceil((r.qty || 0) / RW_SLOT_SIZE)) / RW_SLOT_COUNT) * 100
-                  : (maxValue > 0 ? Math.min(100, (r.value / maxValue) * 100) : 0);
-                return (
-                  <RwRaceLane
-                    key={i}
-                    rank={i + 1}
-                    name={r.name}
-                    pctFinal={pct}
-                    tooltip={tooltipFor(r)}
-                    valueLabel={isAsics ? `${num(r.qty || 0)} คู่` : fmtVal(r)}
-                  />
-                );
-              })}
+          )}
+
+          {activeView === "winners" && (
+            <div className="animate-fade-in-up">
+              <h2 className="text-2xl font-black text-gray-200 mb-6 flex items-center gap-3 uppercase tracking-widest border-b border-gray-600 pb-3"><Rocket className="text-gray-200" size={26} /> Hall of Fame: WINNER SPACE</h2>
+              <HallOfFameGrid list={winnerSpaceList} kind="WINNER SPACE" />
+            </div>
+          )}
+          {activeView === "rising_stars" && (
+            <div className="animate-fade-in-up">
+              <h2 className="text-2xl font-black text-yellow-400 mb-6 flex items-center gap-3 uppercase tracking-widest border-b border-yellow-700 pb-3"><Star className="text-yellow-400" size={26} /> Hall of Fame: RISING STAR</h2>
+              <HallOfFameGrid list={risingStarList} kind="RISING STAR" />
             </div>
           )}
         </>
+      )}
+
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-zinc-900 border border-zinc-700 rounded-2xl w-full max-w-md p-6 relative shadow-2xl animate-fade-in-up">
+            <button onClick={() => setShowAddModal(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-white"><X size={24} /></button>
+            <h3 className={`text-xl font-black mb-2 uppercase flex items-center gap-2 ${addingTo === "WINNER SPACE" ? "text-gray-200" : "text-yellow-400"}`}>
+              {addingTo === "WINNER SPACE" ? <Rocket /> : <Star />} Add to {addingTo}
+            </h3>
+            <p className="text-gray-400 mb-6">Record achievement for <strong className="text-white">{selectedPerson?.name}</strong> (Rank {selectedPerson?.rank})</p>
+            <div className="space-y-4">
+              <div className="flex gap-4">
+                <div className="flex-1">
+                  <label className="block text-sm text-gray-400 mb-1 font-bold">Month</label>
+                  <select value={formMonth} onChange={(e) => setFormMonth(e.target.value)} className="w-full bg-zinc-950 border border-zinc-700 rounded-lg p-3 text-white focus:border-yellow-400 focus:outline-none">
+                    {MONTHS_TH.map((m) => <option key={m}>{m}</option>)}
+                  </select>
+                </div>
+                <div className="flex-1">
+                  <label className="block text-sm text-gray-400 mb-1 font-bold">Year</label>
+                  <select value={formYear} onChange={(e) => setFormYear(e.target.value)} className="w-full bg-zinc-950 border border-zinc-700 rounded-lg p-3 text-white focus:border-yellow-400 focus:outline-none">
+                    {["2025", "2026", "2027"].map((y) => <option key={y}>{y}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-1 font-bold">SM Confirmation Code</label>
+                <input type="password" value={smCode} onChange={(e) => setSmCode(e.target.value)} placeholder="Enter Store Manager Code" className="w-full bg-zinc-950 border border-zinc-700 rounded-lg p-3 text-white focus:border-yellow-400 focus:outline-none" />
+                {errorMsg && <p className="text-red-500 text-sm mt-1">{errorMsg}</p>}
+              </div>
+              <button onClick={submitAddRecord} className={`w-full py-3 rounded-lg font-black uppercase tracking-wider mt-2 transition-transform hover:scale-[1.02] ${addingTo === "WINNER SPACE" ? "bg-gradient-to-r from-gray-200 to-gray-400 text-black" : "bg-gradient-to-r from-yellow-400 to-yellow-600 text-black"}`}>Confirm & Add</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showProfileModal && selectedProfile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-zinc-900 border border-zinc-700 rounded-2xl w-full max-w-2xl overflow-hidden relative shadow-2xl animate-fade-in-up flex flex-col md:flex-row">
+            <button onClick={() => setShowProfileModal(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-white z-10 bg-black/50 rounded-full p-1"><X size={22} /></button>
+            <div className="bg-zinc-950 p-8 w-full md:w-1/2 flex flex-col items-center justify-center text-center border-b md:border-b-0 md:border-r border-zinc-800">
+              <div className="w-24 h-24 bg-zinc-800 rounded-full flex items-center justify-center border-4 border-yellow-400 mb-4"><UserCircle size={60} className="text-yellow-400" /></div>
+              <h2 className="text-2xl font-black text-white uppercase">{selectedProfile.name}</h2>
+              <p className="text-yellow-500 font-bold mb-4">{ctx.store === "ALL" ? "ทุกสาขา" : ctx.store}</p>
+              <div className="w-full grid grid-cols-2 gap-2 mt-4 text-left">
+                <div className="bg-zinc-900 p-3 rounded border border-zinc-800"><div className="text-xs text-gray-500 font-bold uppercase">Rank</div><div className="text-lg font-bold text-white">#{selectedProfile.rank}</div></div>
+                <div className="bg-zinc-900 p-3 rounded border border-zinc-800"><div className="text-xs text-gray-500 font-bold uppercase">{selectedProfile.type === "leadershipSegment" ? "Success %" : selectedProfile.type === "asicsIncentive" ? "คู่ / บาท" : "ยอดขาย"}</div><div className="text-lg font-bold text-white">{fmtVal(selectedProfile)}</div></div>
+                {selectedProfile.type === "salesPerformance" && <div className="bg-zinc-900 p-3 rounded border border-zinc-800 col-span-2"><div className="text-xs text-gray-500 font-bold uppercase">Bills</div><div className="text-lg font-bold text-white">{selectedProfile.billCount || 0}</div></div>}
+              </div>
+            </div>
+            <div className="p-8 w-full md:w-1/2 flex flex-col items-center justify-center bg-zinc-900">
+              <h3 className="text-lg font-black text-gray-300 uppercase tracking-widest mb-2 flex items-center gap-2"><Zap size={18} className="text-yellow-400" /> Core Performance</h3>
+              {profileStats ? <RwHexagonChart stats={profileStats} /> : <div className="text-zinc-500 text-sm text-center py-16 px-4">ไม่มีข้อมูล Sales Leadership เพิ่มเติมสำหรับคนนี้</div>}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -5395,6 +5553,9 @@ function TeamMilestoneAdmin() {
         </table>
       </div>
       {rows.length === 0 && <div className="empty-hint">ยังไม่มีข้อมูล — กด "+ แถว" เพื่อเริ่มเพิ่มรายชื่อพนักงาน</div>}
+      <div style={{ marginTop: "1.4rem", paddingTop: "1.2rem", borderTop: "1px solid var(--line)" }}>
+        <UserAccountsAdmin />
+      </div>
     </div>
   );
 }
@@ -5407,7 +5568,7 @@ const DEFAULT_SOURCE_CATEGORIES = [
   { id: "announcement", label: "ANNOUNCEMENT AND TRAINING" },
 ];
 const DEFAULT_POD_CATEGORY = {
-  gdrive: "spacepod", cloudstorage: "spacepod", useraccounts: "spacepod", taskmanager: "spacepod", authority: "spacepod",
+  gdrive: "spacepod", cloudstorage: "spacepod", taskmanager: "spacepod", authority: "spacepod",
   sales: "weekly", tender: "weekly", target: "weekly", nationality: "weekly", vatrefund: "weekly", reward: "weekly",
   sku: "location",
   teammilestone: "milestone",
@@ -5514,7 +5675,6 @@ function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLas
       </>
     ) },
     { key: "cloudstorage", title: "Cloud Storage", icon: <FileSpreadsheet size={13} />, node: <CloudStorageSettingsCard bare /> },
-    { key: "useraccounts", title: "บัญชีผู้ใช้งาน", icon: <Users2 size={13} />, node: <UserAccountsAdmin bare /> },
     { key: "taskmanager", title: "จัดการ Tasks", icon: <ClipboardList size={13} />, node: <TaskManagerAdmin tasks={tasks} saveTask={saveTask} deleteTask={deleteTask} stores={stores} bare /> },
     { key: "authority", title: "สิทธิ์การเข้าถึง", icon: <Lock size={13} />, node: <AuthorityAdmin authority={authority} saveAuthority={saveAuthority} bare /> },
     { key: "sales", title: "ยอดขาย", icon: <Upload size={13} />, node: matchesSearch("ยอดขาย") && (
