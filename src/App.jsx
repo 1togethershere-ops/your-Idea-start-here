@@ -2205,8 +2205,16 @@ function CompetitorAnalysisWidget({ ctx, widgetId }) {
         </tbody>
       </table>
 
-      <div className="panel-title" style={{ marginTop: ".8rem" }}>Reference</div>
-      <div className="photo-grid">
+      <div className="panel-title" style={{ marginTop: ".8rem" }}>Reference <span className="paste-hint no-print">(วางรูปด้วย Ctrl+V ได้ เช่น รูปที่คัดลอกมาจาก WhatsApp)</span></div>
+      <div
+        className="photo-grid photo-grid-pasteable"
+        tabIndex={0}
+        onPaste={(e) => {
+          const items = Array.from(e.clipboardData?.items || []);
+          const imageFiles = items.filter((it) => it.type.startsWith("image/")).map((it) => it.getAsFile()).filter(Boolean);
+          if (imageFiles.length > 0) { e.preventDefault(); handleFiles(imageFiles); }
+        }}
+      >
         {photos.map((p, i) => (
           <div className="photo-thumb" key={i}>
             <img src={p} alt={`ref-${i}`} />
@@ -4468,6 +4476,9 @@ const GLOBAL_STYLES = `
         .footfall-row input{ flex:1; }
 
         .photo-grid{ display:flex; flex-wrap:wrap; gap:.6rem; }
+        .photo-grid-pasteable{ outline:none; border-radius:10px; }
+        .photo-grid-pasteable:focus{ box-shadow:0 0 0 2px var(--yellow-dark); }
+        .paste-hint{ font-weight:400; font-size:.72rem; color:var(--mute); margin-left:.4rem; }
         .photo-thumb{ position:relative; width:90px; height:90px; border-radius:9px; overflow:hidden; border:1px solid var(--line); }
         .photo-thumb img{ width:100%; height:100%; object-fit:cover; }
         .photo-remove{ position:absolute; top:3px; right:3px; background:rgba(0,0,0,.65); border:none; color:#fff; border-radius:50%; width:19px; height:19px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
@@ -4500,7 +4511,32 @@ const GLOBAL_STYLES = `
         .mapping-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1rem; }
         .upload-search-row{ display:flex; align-items:center; gap:.6rem; background:#fff; border:1px solid var(--line); border-radius:12px; padding:.7rem 1rem; margin:1.4rem 0 1rem; }
         .upload-search-row input{ flex:1; border:none; outline:none; font-size:.88rem; background:transparent; }
-        .upload-table-wrap{ overflow-x:auto; border:1px solid var(--line); border-radius:14px; background:#fff; }
+        .upload-table-wrap{ overflow-x:auto; border:1px solid var(--line); border-radius:14px; background:#fff; margin-bottom:1.6rem; }
+        .mapping-section-title{ display:flex; align-items:baseline; gap:.6rem; font-family:'Space Grotesk',sans-serif; font-weight:800; font-size:1rem; letter-spacing:.02em; color:var(--ink); margin:2rem 0 .8rem; padding-top:1.6rem; border-top:2px solid var(--yellow); }
+        .mapping-section-title:first-of-type{ margin-top:1.4rem; padding-top:0; border-top:none; }
+        .source-pod{ background:#fff; border:1px solid var(--line); border-radius:14px; margin-bottom:.9rem; cursor:grab; }
+        .source-pod-dragging{ opacity:.4; }
+        .source-pod-handle{ display:flex; align-items:center; gap:.4rem; padding:.6rem .9rem; border-bottom:1px solid var(--line); font-weight:700; font-size:.8rem; color:var(--mute); background:#FAFAF8; border-radius:14px 14px 0 0; }
+        .source-pod-move{ margin-left:auto; position:relative; }
+        .source-pod-move-menu{ position:absolute; right:0; top:calc(100% + 4px); z-index:20; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 20px rgba(0,0,0,.12); min-width:220px; overflow:hidden; }
+        .source-pod-move-item{ display:block; width:100%; text-align:left; padding:.55rem .8rem; border:none; background:#fff; font-size:.8rem; font-weight:600; cursor:pointer; border-bottom:1px solid var(--line); }
+        .source-pod-move-item:last-child{ border-bottom:none; }
+        .source-pod-move-item:hover:not(:disabled){ background:#FFF8DE; }
+        .source-pod-move-item-active{ color:var(--mute); cursor:not-allowed; font-weight:400; }
+        .source-pod-body{ padding:1rem 1.1rem; }
+        .source-pod-body > .mapping-card{ border:none; box-shadow:none; padding:0; margin:0; border-radius:0; background:transparent; }
+        .source-pod-body > .mapping-card > .panel-title{ display:none; }
+        .source-category{ min-height:20px; }
+        .source-cat-empty{ border:1.5px dashed var(--line); border-radius:12px; padding:1rem; text-align:center; color:var(--mute); font-size:.8rem; margin-bottom:.9rem; }
+        .source-cat-remove{ border:none; background:none; color:var(--mute); cursor:pointer; padding:.2rem; border-radius:5px; margin-left:auto; }
+        .source-cat-remove:hover{ background:#FCE9EB; color:#D4283F; }
+        .mapping-section-title span{ font-family:'Inter',sans-serif; font-weight:400; font-size:.78rem; color:var(--mute); letter-spacing:0; }
+        .tm-table th{ padding:0; }
+        .tm-col-head{ display:flex; align-items:center; gap:.3rem; padding:.5rem .6rem; }
+        .tm-col-label{ flex:1; min-width:80px; border:none; background:transparent; font-weight:700; font-size:.82rem; padding:.2rem; }
+        .tm-col-label:focus{ outline:1px solid var(--yellow-dark); border-radius:4px; }
+        .tm-col-remove{ border:none; background:none; color:var(--mute); cursor:pointer; padding:.2rem; border-radius:4px; flex-shrink:0; }
+        .tm-col-remove:hover{ background:#FCE9EB; color:#D4283F; }
         .upload-table{ width:100%; border-collapse:collapse; font-size:.92rem; }
         .upload-table thead th{ text-align:left; padding:.8rem .9rem; background:var(--ink); border-bottom:1px solid var(--line); font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; color:var(--yellow); white-space:nowrap; }
         .upload-table tbody tr:nth-child(odd){ background:#FFFDF2; }
@@ -5243,6 +5279,102 @@ function CloudStorageSettingsCard() {
   );
 }
 
+function TeamMilestoneAdmin() {
+  const STORAGE_KEY = "teammilestone:data";
+  const [columns, setColumns] = useState([{ id: "name", label: "ชื่อพนักงาน" }, { id: "note", label: "หมายเหตุ" }]);
+  const [rows, setRows] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const v = await window.storage.get(STORAGE_KEY, true);
+        if (v?.value) {
+          const parsed = JSON.parse(v.value);
+          if (parsed.columns?.length) setColumns(parsed.columns);
+          if (parsed.rows) setRows(parsed.rows);
+        }
+      } catch (e) {}
+      setLoaded(true);
+    })();
+  }, []);
+
+  const persist = useCallback(async (cols, rws) => {
+    try { await window.storage.set(STORAGE_KEY, JSON.stringify({ columns: cols, rows: rws }), true); } catch (e) {}
+  }, []);
+  useEffect(() => { if (loaded) persist(columns, rows); }, [columns, rows, loaded, persist]);
+
+  const addColumn = () => {
+    const label = window.prompt("ชื่อคอลัมน์ใหม่:");
+    if (!label || !label.trim()) return;
+    setColumns((prev) => [...prev, { id: `col_${Date.now()}`, label: label.trim() }]);
+  };
+  const removeColumn = (id) => {
+    setColumns((prev) => prev.filter((c) => c.id !== id));
+    setRows((prev) => prev.map((r) => { const next = { ...r.values }; delete next[id]; return { ...r, values: next }; }));
+  };
+  const renameColumn = (id, label) => setColumns((prev) => prev.map((c) => (c.id === id ? { ...c, label } : c)));
+  const addRow = () => setRows((prev) => [...prev, { id: `row_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`, values: {} }]);
+  const removeRow = (id) => setRows((prev) => prev.filter((r) => r.id !== id));
+  const updateCell = (rowId, colId, value) => setRows((prev) => prev.map((r) => (r.id === rowId ? { ...r, values: { ...r.values, [colId]: value } } : r)));
+
+  return (
+    <div className="mapping-card">
+      <div className="panel-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: ".5rem" }}>
+        <span><Users2 size={13} /> Team Milestone — ข้อมูลพนักงาน</span>
+        <div style={{ display: "flex", gap: ".4rem" }}>
+          <button className="btn btn-outline btn-sm" onClick={addColumn}><Plus size={12} /> คอลัมน์</button>
+          <button className="btn btn-outline btn-sm" onClick={addRow}><Plus size={12} /> แถว</button>
+        </div>
+      </div>
+      <div className="mapping-cols">พื้นที่รวบรวมข้อมูลพนักงานแบบยืดหยุ่น — เพิ่ม/ลบแถวและคอลัมน์ได้ตามต้องการ บันทึกอัตโนมัติและแชร์ให้ทุกคนเห็นเหมือนกัน</div>
+      <div style={{ overflowX: "auto" }}>
+        <table className="data-table tm-table">
+          <thead>
+            <tr>
+              {columns.map((c) => (
+                <th key={c.id}>
+                  <div className="tm-col-head">
+                    <input className="tm-col-label" value={c.label} onChange={(e) => renameColumn(c.id, e.target.value)} />
+                    <button className="tm-col-remove" onClick={() => removeColumn(c.id)} title="ลบคอลัมน์นี้"><X size={11} /></button>
+                  </div>
+                </th>
+              ))}
+              <th style={{ width: 40 }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                {columns.map((c) => (
+                  <td key={c.id}><input value={r.values[c.id] || ""} onChange={(e) => updateCell(r.id, c.id, e.target.value)} /></td>
+                ))}
+                <td><button className="btn btn-outline btn-sm" onClick={() => removeRow(r.id)}><X size={11} /></button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {rows.length === 0 && <div className="empty-hint">ยังไม่มีข้อมูล — กด "+ แถว" เพื่อเริ่มเพิ่มรายชื่อพนักงาน</div>}
+    </div>
+  );
+}
+
+const DEFAULT_SOURCE_CATEGORIES = [
+  { id: "spacepod", label: "SPACE POD" },
+  { id: "weekly", label: "WEEKLY DATA UPLOAD" },
+  { id: "location", label: "LOCATION AND STORAGE" },
+  { id: "milestone", label: "TEAM MILESTONE" },
+  { id: "announcement", label: "ANNOUNCEMENT AND TRAINING" },
+];
+const DEFAULT_POD_CATEGORY = {
+  gdrive: "spacepod", cloudstorage: "spacepod", useraccounts: "spacepod", taskmanager: "spacepod", authority: "spacepod",
+  sales: "weekly", tender: "weekly", target: "weekly", nationality: "weekly", vatrefund: "weekly", reward: "weekly",
+  sku: "location",
+  teammilestone: "milestone",
+  announcement: "announcement", training: "announcement",
+};
+
 function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLastYearRef, fileTenderRef, fileTargetRef, fileNationalityRef, fileVatRefundRef, fileRewardRef, fileSkuRef, handleSalesUpload, handleTenderUpload, handleTargetUpload, handleNationalityUpload, handleVatRefundUpload, handleRewardUpload, resetRewardData, handleSkuUpload, data, tenderCurrent, targets, nationality, vatRefundRows, rewardLeadership, rewardTransactions, rewardPeriod, skuLookup, webhookUrl, saveWebhookUrl, tasks, saveTask, deleteTask, stores, authority, saveAuthority, uploadTimestamps }) {
   const lastUpload = (key) => {
     const t = fmtUploadedAt(uploadTimestamps?.[key]);
@@ -5254,149 +5386,235 @@ function MappingToolPage({ onBack, demoMode, toggleDemo, fileCurrentRef, fileLas
   const [uploadSearch, setUploadSearch] = useState("");
   const matchesSearch = (title) => !uploadSearch.trim() || title.toLowerCase().includes(uploadSearch.trim().toLowerCase());
 
+  const [sourceCategories, setSourceCategories] = useState(DEFAULT_SOURCE_CATEGORIES);
+  const [podCategoryMap, setPodCategoryMap] = useState(DEFAULT_POD_CATEGORY);
+  const [layoutLoaded, setLayoutLoaded] = useState(false);
+  const [dragPodKey, setDragPodKey] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try { const v = await window.storage.get("source:categories", true); if (v?.value) { const p = JSON.parse(v.value); if (p?.length) setSourceCategories(p); } } catch (e) {}
+      try { const v = await window.storage.get("source:podCategoryMap", true); if (v?.value) setPodCategoryMap({ ...DEFAULT_POD_CATEGORY, ...JSON.parse(v.value) }); } catch (e) {}
+      setLayoutLoaded(true);
+    })();
+  }, []);
+  const persistCategories = useCallback(async (cats) => { try { await window.storage.set("source:categories", JSON.stringify(cats), true); } catch (e) {} }, []);
+  const persistPodMap = useCallback(async (map) => { try { await window.storage.set("source:podCategoryMap", JSON.stringify(map), true); } catch (e) {} }, []);
+
+  const addCategory = () => {
+    const label = window.prompt("ชื่อ Category ใหม่:");
+    if (!label || !label.trim()) return;
+    const next = [...sourceCategories, { id: `cat_${Date.now()}`, label: label.trim().toUpperCase() }];
+    setSourceCategories(next);
+    persistCategories(next);
+  };
+  const removeCategory = (id) => {
+    if (sourceCategories.length <= 1) return;
+    const fallback = sourceCategories.find((c) => c.id !== id)?.id;
+    const nextCats = sourceCategories.filter((c) => c.id !== id);
+    const nextMap = { ...podCategoryMap };
+    Object.keys(nextMap).forEach((k) => { if (nextMap[k] === id) nextMap[k] = fallback; });
+    setSourceCategories(nextCats); persistCategories(nextCats);
+    setPodCategoryMap(nextMap); persistPodMap(nextMap);
+  };
+  const movePodTo = (podKey, categoryId) => {
+    if (podCategoryMap[podKey] === categoryId) return;
+    const next = { ...podCategoryMap, [podKey]: categoryId };
+    setPodCategoryMap(next);
+    persistPodMap(next);
+  };
+  const categoryOf = (podKey) => podCategoryMap[podKey] || DEFAULT_POD_CATEGORY[podKey] || sourceCategories[0]?.id;
+
+  const Pod = ({ podKey, title, icon, children }) => {
+    const [moveMenuOpen, setMoveMenuOpen] = useState(false);
+    const currentCat = categoryOf(podKey);
+    return (
+      <div
+        className={`source-pod${dragPodKey === podKey ? " source-pod-dragging" : ""}`}
+        draggable
+        onDragStart={() => setDragPodKey(podKey)}
+        onDragEnd={() => setDragPodKey(null)}
+      >
+        <div className="source-pod-handle">
+          <GripVertical size={14} /> {icon} <span>{title}</span>
+          <div className="source-pod-move no-print">
+            <button className="btn btn-outline btn-sm" onClick={() => setMoveMenuOpen((o) => !o)}>
+              <SlidersHorizontal size={11} /> Move Pod To
+            </button>
+            {moveMenuOpen && (
+              <div className="source-pod-move-menu">
+                {sourceCategories.map((cat) => (
+                  <button
+                    key={cat.id}
+                    className={`source-pod-move-item${cat.id === currentCat ? " source-pod-move-item-active" : ""}`}
+                    disabled={cat.id === currentCat}
+                    onClick={() => { movePodTo(podKey, cat.id); setMoveMenuOpen(false); }}
+                  >
+                    {cat.label}{cat.id === currentCat && " (อยู่ตรงนี้)"}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="source-pod-body">{children}</div>
+      </div>
+    );
+  };
+
+  if (!layoutLoaded) return <div className="mapping-page"><div className="empty-hint">กำลังโหลด...</div></div>;
+
+  const allPods = [
+    { key: "gdrive", title: "เชื่อมต่อ Google Drive", icon: <CreditCard size={13} />, node: (
+      <>
+        <div className="mapping-cols">วาง URL ของ Google Apps Script Web App ที่ผูกกับโฟลเดอร์ Google Drive ของคุณ — ทุกครั้งที่กด "ส่งรายงาน & PDF" ระบบจะส่งข้อมูลสรุปไปบันทึกไว้ในโฟลเดอร์นั้นอัตโนมัติ (ดูวิธีตั้งค่าสคริปต์ได้ในแชท)</div>
+        <label className="field-label">Web App URL</label>
+        <input type="text" value={urlInput} onChange={(e) => setUrlInput(e.target.value)} placeholder="https://script.google.com/macros/s/xxxxx/exec" />
+        <button className="btn btn-primary btn-block" style={{ marginTop: ".6rem" }} onClick={() => saveWebhookUrl(urlInput.trim())}><Save size={14} /> บันทึกลิงก์</button>
+        {webhookUrl && <div className="mapping-status">✅ เชื่อมต่อแล้ว — รายงานที่ส่งจะถูกบันทึกไปที่ Google Drive ด้วย</div>}
+      </>
+    ) },
+    { key: "cloudstorage", title: "Cloud Storage", icon: <FileSpreadsheet size={13} />, node: <CloudStorageSettingsCard bare /> },
+    { key: "useraccounts", title: "บัญชีผู้ใช้งาน", icon: <Users2 size={13} />, node: <UserAccountsAdmin bare /> },
+    { key: "taskmanager", title: "จัดการ Tasks", icon: <ClipboardList size={13} />, node: <TaskManagerAdmin tasks={tasks} saveTask={saveTask} deleteTask={deleteTask} stores={stores} bare /> },
+    { key: "authority", title: "สิทธิ์การเข้าถึง", icon: <Lock size={13} />, node: <AuthorityAdmin authority={authority} saveAuthority={saveAuthority} bare /> },
+    { key: "sales", title: "ยอดขาย", icon: <Upload size={13} />, node: matchesSearch("ยอดขาย") && (
+      <div className="upload-table-wrap"><table className="upload-table"><tbody><tr>
+        <td className="upload-row-name"><Upload size={14} /> ยอดขาย</td>
+        <td className="upload-row-desc">จับคอลัมน์: Store, Sales Date, Net Sales, Gross Sales, Discount Value, Sales Qty, Tax Value, Receipt No., Disc% Reason, Sales Person Code, SKU Code, Description, Unit Selling Price, Brand (คอลัมน์ AL) — แท็บ "2026"/"2025"</td>
+        <td className="upload-row-action">
+          <button className="btn btn-outline" onClick={() => fileCurrentRef.current?.click()}><FileSpreadsheet size={13} /> ปีนี้</button>
+          <input ref={fileCurrentRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleSalesUpload(e.target.files, "current"); e.target.value = ""; }} />
+          <button className="btn btn-outline" onClick={() => fileLastYearRef.current?.click()}><History size={13} /> ปีที่แล้ว</button>
+          <input ref={fileLastYearRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleSalesUpload(e.target.files, "lastyear"); e.target.value = ""; }} />
+          <button className="btn btn-outline" onClick={toggleDemo}><Sparkles size={13} /> {demoMode ? "ล้างตัวอย่าง" : "โหลดตัวอย่างปีก่อน"}</button>
+        </td>
+        <td className="upload-row-status">มีข้อมูลแล้ว {new Set(data.kpi.map((r) => `${r.store}__${r.date}`)).size} วัน-สาขา{lastUpload("sales")}</td>
+        <td className="upload-row-clear">—</td>
+      </tr></tbody></table></div>
+    ) },
+    { key: "tender", title: "Tender", icon: <CreditCard size={13} />, node: matchesSearch("Tender") && (
+      <div className="upload-table-wrap"><table className="upload-table"><tbody><tr>
+        <td className="upload-row-name"><CreditCard size={14} /> Tender</td>
+        <td className="upload-row-desc">จับคอลัมน์: Store Name, Transaction Date, Receipt NO, Total Tender · ช่องทางชำระเงินและคูปอง/Voucher — แท็บ "Tender"</td>
+        <td className="upload-row-action">
+          <button className="btn btn-outline" onClick={() => fileTenderRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
+          <input ref={fileTenderRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleTenderUpload(e.target.files, "current"); e.target.value = ""; }} />
+        </td>
+        <td className="upload-row-status">มีข้อมูลแล้ว {tenderCurrent.length} วัน-สาขา{lastUpload("tender")}</td>
+        <td className="upload-row-clear">—</td>
+      </tr></tbody></table></div>
+    ) },
+    { key: "target", title: "Target", icon: <TargetIcon size={13} />, node: matchesSearch("Target") && (
+      <div className="upload-table-wrap"><table className="upload-table"><tbody><tr>
+        <td className="upload-row-name"><TargetIcon size={14} /> Target</td>
+        <td className="upload-row-desc">จับคอลัมน์: Store, Month (YYYY-MM), Target — ใช้คำนวณ MTD Sale / % Hit</td>
+        <td className="upload-row-action">
+          <button className="btn btn-outline" onClick={() => fileTargetRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
+          <input ref={fileTargetRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleTargetUpload(e.target.files); e.target.value = ""; }} />
+        </td>
+        <td className="upload-row-status">มีข้อมูลแล้ว {targets.length} รายการ{lastUpload("target")}</td>
+        <td className="upload-row-clear">—</td>
+      </tr></tbody></table></div>
+    ) },
+    { key: "nationality", title: "สัดส่วนลูกค้า", icon: <Users2 size={13} />, node: matchesSearch("สัดส่วนลูกค้า Nationality") && (
+      <div className="upload-table-wrap"><table className="upload-table"><tbody><tr>
+        <td className="upload-row-name"><Users2 size={14} /> สัดส่วนลูกค้า</td>
+        <td className="upload-row-desc">จับคอลัมน์: Store, Date, Nationality, Count / Amount — ใช้คำนวณจำนวนต่อสัญชาติเทียบกับบิลทั้งหมด</td>
+        <td className="upload-row-action">
+          <button className="btn btn-outline" onClick={() => fileNationalityRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
+          <input ref={fileNationalityRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleNationalityUpload(e.target.files); e.target.value = ""; }} />
+        </td>
+        <td className="upload-row-status">มีข้อมูลแล้ว {nationality.length} รายการ{lastUpload("nationality")}</td>
+        <td className="upload-row-clear">—</td>
+      </tr></tbody></table></div>
+    ) },
+    { key: "vatrefund", title: "VAT Refund", icon: <Plane size={13} />, node: matchesSearch("VAT Refund นักท่องเที่ยว") && (
+      <div className="upload-table-wrap"><table className="upload-table"><tbody><tr>
+        <td className="upload-row-name"><Plane size={14} /> VAT Refund</td>
+        <td className="upload-row-desc">จับคอลัมน์: เอกสารลงวันที่ (Date), STORE, ประเทศ (Country) — ใช้เดินหน้า SPACE POD "VAT Refund Tracker" อัตโนมัติ</td>
+        <td className="upload-row-action">
+          <button className="btn btn-outline" onClick={() => fileVatRefundRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
+          <input ref={fileVatRefundRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleVatRefundUpload(e.target.files); e.target.value = ""; }} />
+        </td>
+        <td className="upload-row-status">มีข้อมูลแล้ว {vatRefundRows.length} แถว{lastUpload("vatrefund")}</td>
+        <td className="upload-row-clear">—</td>
+      </tr></tbody></table></div>
+    ) },
+    { key: "reward", title: "Staff Reward and Achievement", icon: <Trophy size={13} />, node: matchesSearch("Staff Reward and Achievement") && (
+      <div className="upload-table-wrap"><table className="upload-table"><tbody><tr>
+        <td className="upload-row-name"><Trophy size={14} /> Staff Reward and Achievement</td>
+        <td className="upload-row-desc">หาตาราง "Sales Leadership" และตารางรายการขาย (Store, Brand, Sales Date, SKU Code ฯลฯ) ในไฟล์เดียวกันอัตโนมัติ ไม่ว่าจะอยู่แท็บไหน — อัปโหลดทุกวัน</td>
+        <td className="upload-row-action">
+          <button className="btn btn-outline" onClick={() => fileRewardRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
+          <input ref={fileRewardRef} type="file" accept=".xlsx,.xls" hidden onChange={(e) => { handleRewardUpload(e.target.files); e.target.value = ""; }} />
+        </td>
+        <td className="upload-row-status">พนักงาน {rewardLeadership.length} รายการ · บิล {rewardTransactions.length} แถว{rewardPeriod && ` · ${rewardPeriod}`}{lastUpload("reward")}</td>
+        <td className="upload-row-clear">
+          <button className={`btn btn-outline btn-sm no-print${confirmResetReward ? " btn-danger-confirm" : ""}`} onClick={() => {
+            if (!confirmResetReward) { setConfirmResetReward(true); return; }
+            resetRewardData();
+            setConfirmResetReward(false);
+          }}><X size={12} /> {confirmResetReward ? "ยืนยันล้าง" : "ล้างข้อมูล"}</button>
+        </td>
+      </tr></tbody></table></div>
+    ) },
+    { key: "sku", title: "ฐานข้อมูลสินค้า/สต๊อก", icon: <FileSpreadsheet size={13} />, node: (
+      <div className="upload-table-wrap"><table className="upload-table"><tbody><tr>
+        <td className="upload-row-name"><FileSpreadsheet size={14} /> ฐานข้อมูลสินค้า/สต๊อก</td>
+        <td className="upload-row-desc">ใช้แค่ 3 คอลัมน์: Prod Code (C), Level 2/แบรนด์ (U), Level 4/ประเภท (W) — ใช้ใน Carton Label + Store Inventory</td>
+        <td className="upload-row-action">
+          <button className="btn btn-outline" onClick={() => fileSkuRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
+          <input ref={fileSkuRef} type="file" accept=".xlsx,.xls" hidden onChange={(e) => { handleSkuUpload(e.target.files); e.target.value = ""; }} />
+        </td>
+        <td className="upload-row-status">มีข้อมูลแล้ว {skuLookup.length} รายการ{lastUpload("sku")}</td>
+        <td className="upload-row-clear">—</td>
+      </tr></tbody></table></div>
+    ) },
+    { key: "teammilestone", title: "Team Milestone", icon: <Users2 size={13} />, node: <TeamMilestoneAdmin bare /> },
+    { key: "announcement", title: "Announcement", icon: <Zap size={13} />, node: <DocUploadAdmin docType="announcement" label="Announcement" icon={<Zap size={13} />} searchQuery={uploadSearch} bare /> },
+    { key: "training", title: "Training Tool", icon: <Trophy size={13} />, node: <DocUploadAdmin docType="training" label="Training Tool" icon={<Trophy size={13} />} searchQuery={uploadSearch} bare /> },
+  ];
+
   return (
     <div className="mapping-page">
       <div className="mapping-head">
         <button className="btn btn-outline" onClick={onBack}>← กลับไปที่ YOUR BUILD</button>
         <div>
           <div className="page-title">YOUR SOURCE</div>
-          <div className="page-meta">ศูนย์รวมข้อมูลต้นทาง — อัปโหลดไฟล์ Mapping Tool และจัดการบัญชีผู้ใช้งาน</div>
+          <div className="page-meta">ศูนย์รวมข้อมูลต้นทาง — ลาก POD ข้าม Category ได้อิสระ, เพิ่ม Category ใหม่ได้ด้านล่าง</div>
         </div>
-      </div>
-
-      <div className="mapping-grid">
-        <div className="mapping-card mapping-card-webhook">
-          <div className="panel-title"><CreditCard size={13} /> เชื่อมต่อ Google Drive (เก็บรายงานที่ส่ง)</div>
-          <div className="mapping-cols">
-            วาง URL ของ Google Apps Script Web App ที่ผูกกับโฟลเดอร์ Google Drive ของคุณ — ทุกครั้งที่กด "ส่งรายงาน & PDF" ระบบจะส่งข้อมูลสรุปไปบันทึกไว้ในโฟลเดอร์นั้นอัตโนมัติ (ดูวิธีตั้งค่าสคริปต์ได้ในแชท)
-          </div>
-          <label className="field-label">Web App URL</label>
-          <input type="text" value={urlInput} onChange={(e) => setUrlInput(e.target.value)} placeholder="https://script.google.com/macros/s/xxxxx/exec" />
-          <button className="btn btn-primary btn-block" style={{ marginTop: ".6rem" }} onClick={() => saveWebhookUrl(urlInput.trim())}>
-            <Save size={14} /> บันทึกลิงก์
-          </button>
-          {webhookUrl && <div className="mapping-status">✅ เชื่อมต่อแล้ว — รายงานที่ส่งจะถูกบันทึกไปที่ Google Drive ด้วย</div>}
-        </div>
-
-        <CloudStorageSettingsCard />
-
-        <UserAccountsAdmin />
       </div>
 
       <div className="upload-search-row">
         <Search size={15} color="var(--mute)" />
-        <input type="text" value={uploadSearch} onChange={(e) => setUploadSearch(e.target.value)} placeholder="ค้นหา Widget ที่ต้องการอัปโหลด เช่น ยอดขาย, Reward, Stock" />
+        <input type="text" value={uploadSearch} onChange={(e) => setUploadSearch(e.target.value)} placeholder="ค้นหา SPACE POD เช่น ยอดขาย, Reward, Stock" />
       </div>
 
-      <div className="upload-table-wrap">
-        <table className="upload-table">
-          <thead>
-            <tr><th>Widget</th><th>คำอธิบาย</th><th>อัปโหลด</th><th>สถานะ / อัปโหลดล่าสุด</th><th>ล้างข้อมูล</th></tr>
-          </thead>
-          <tbody>
-            {matchesSearch("ยอดขาย") && (
-              <tr>
-                <td className="upload-row-name"><Upload size={14} /> ยอดขาย</td>
-                <td className="upload-row-desc">จับคอลัมน์: Store, Sales Date, Net Sales, Gross Sales, Discount Value, Sales Qty, Tax Value, Receipt No., Disc% Reason, Sales Person Code, SKU Code, Description, Unit Selling Price, Brand (คอลัมน์ AL) — แท็บ "2026"/"2025"</td>
-                <td className="upload-row-action">
-                  <button className="btn btn-outline" onClick={() => fileCurrentRef.current?.click()}><FileSpreadsheet size={13} /> ปีนี้</button>
-                  <input ref={fileCurrentRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleSalesUpload(e.target.files, "current"); e.target.value = ""; }} />
-                  <button className="btn btn-outline" onClick={() => fileLastYearRef.current?.click()}><History size={13} /> ปีที่แล้ว</button>
-                  <input ref={fileLastYearRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleSalesUpload(e.target.files, "lastyear"); e.target.value = ""; }} />
-                  <button className="btn btn-outline" onClick={toggleDemo}><Sparkles size={13} /> {demoMode ? "ล้างตัวอย่าง" : "โหลดตัวอย่างปีก่อน"}</button>
-                </td>
-                <td className="upload-row-status">มีข้อมูลแล้ว {new Set(data.kpi.map((r) => `${r.store}__${r.date}`)).size} วัน-สาขา{lastUpload("sales")}</td>
-                <td className="upload-row-clear">—</td>
-              </tr>
-            )}
-            {matchesSearch("Tender") && (
-              <tr>
-                <td className="upload-row-name"><CreditCard size={14} /> Tender</td>
-                <td className="upload-row-desc">จับคอลัมน์: Store Name, Transaction Date, Receipt NO, Total Tender · ช่องทางชำระเงินและคูปอง/Voucher — แท็บ "Tender"</td>
-                <td className="upload-row-action">
-                  <button className="btn btn-outline" onClick={() => fileTenderRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
-                  <input ref={fileTenderRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleTenderUpload(e.target.files, "current"); e.target.value = ""; }} />
-                </td>
-                <td className="upload-row-status">มีข้อมูลแล้ว {tenderCurrent.length} วัน-สาขา{lastUpload("tender")}</td>
-                <td className="upload-row-clear">—</td>
-              </tr>
-            )}
-            {matchesSearch("Target") && (
-              <tr>
-                <td className="upload-row-name"><TargetIcon size={14} /> Target</td>
-                <td className="upload-row-desc">จับคอลัมน์: Store, Month (YYYY-MM), Target — ใช้คำนวณ MTD Sale / % Hit</td>
-                <td className="upload-row-action">
-                  <button className="btn btn-outline" onClick={() => fileTargetRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
-                  <input ref={fileTargetRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleTargetUpload(e.target.files); e.target.value = ""; }} />
-                </td>
-                <td className="upload-row-status">มีข้อมูลแล้ว {targets.length} รายการ{lastUpload("target")}</td>
-                <td className="upload-row-clear">—</td>
-              </tr>
-            )}
-            {matchesSearch("สัดส่วนลูกค้า Nationality") && (
-              <tr>
-                <td className="upload-row-name"><Users2 size={14} /> สัดส่วนลูกค้า</td>
-                <td className="upload-row-desc">จับคอลัมน์: Store, Date, Nationality, Count / Amount — ใช้คำนวณจำนวนต่อสัญชาติเทียบกับบิลทั้งหมด</td>
-                <td className="upload-row-action">
-                  <button className="btn btn-outline" onClick={() => fileNationalityRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
-                  <input ref={fileNationalityRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleNationalityUpload(e.target.files); e.target.value = ""; }} />
-                </td>
-                <td className="upload-row-status">มีข้อมูลแล้ว {nationality.length} รายการ{lastUpload("nationality")}</td>
-                <td className="upload-row-clear">—</td>
-              </tr>
-            )}
-            {matchesSearch("VAT Refund นักท่องเที่ยว") && (
-              <tr>
-                <td className="upload-row-name"><Plane size={14} /> VAT Refund</td>
-                <td className="upload-row-desc">จับคอลัมน์: เอกสารลงวันที่ (Date), STORE, ประเทศ (Country) — ใช้เดินหน้า Widget "VAT Refund Tracker" อัตโนมัติ</td>
-                <td className="upload-row-action">
-                  <button className="btn btn-outline" onClick={() => fileVatRefundRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
-                  <input ref={fileVatRefundRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={(e) => { handleVatRefundUpload(e.target.files); e.target.value = ""; }} />
-                </td>
-                <td className="upload-row-status">มีข้อมูลแล้ว {vatRefundRows.length} แถว{lastUpload("vatrefund")}</td>
-                <td className="upload-row-clear">—</td>
-              </tr>
-            )}
-            {matchesSearch("Staff Reward and Achievement") && (
-              <tr>
-                <td className="upload-row-name"><Trophy size={14} /> Staff Reward and Achievement</td>
-                <td className="upload-row-desc">หาตาราง "Sales Leadership" และตารางรายการขาย (Store, Brand, Sales Date, SKU Code ฯลฯ) ในไฟล์เดียวกันอัตโนมัติ ไม่ว่าจะอยู่แท็บไหน — อัปโหลดทุกวัน</td>
-                <td className="upload-row-action">
-                  <button className="btn btn-outline" onClick={() => fileRewardRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
-                  <input ref={fileRewardRef} type="file" accept=".xlsx,.xls" hidden onChange={(e) => { handleRewardUpload(e.target.files); e.target.value = ""; }} />
-                </td>
-                <td className="upload-row-status">พนักงาน {rewardLeadership.length} รายการ · บิล {rewardTransactions.length} แถว{rewardPeriod && ` · ${rewardPeriod}`}{lastUpload("reward")}</td>
-                <td className="upload-row-clear">
-                  <button className={`btn btn-outline btn-sm no-print${confirmResetReward ? " btn-danger-confirm" : ""}`} onClick={() => {
-                    if (!confirmResetReward) { setConfirmResetReward(true); return; }
-                    resetRewardData();
-                    setConfirmResetReward(false);
-                  }}>
-                    <X size={12} /> {confirmResetReward ? "ยืนยันล้าง" : "ล้างข้อมูล"}
-                  </button>
-                </td>
-              </tr>
-            )}
-            {matchesSearch("ฐานข้อมูลสินค้า สต๊อก Stock Room") && (
-              <tr>
-                <td className="upload-row-name"><FileSpreadsheet size={14} /> ฐานข้อมูลสินค้า/สต๊อก</td>
-                <td className="upload-row-desc">ใช้แค่ 3 คอลัมน์: Prod Code (C), Level 2/แบรนด์ (U), Level 4/ประเภท (W) — ใช้ใน Carton Label + Store Inventory</td>
-                <td className="upload-row-action">
-                  <button className="btn btn-outline" onClick={() => fileSkuRef.current?.click()}><FileSpreadsheet size={13} /> คลิกเพื่อเลือกไฟล์</button>
-                  <input ref={fileSkuRef} type="file" accept=".xlsx,.xls" hidden onChange={(e) => { handleSkuUpload(e.target.files); e.target.value = ""; }} />
-                </td>
-                <td className="upload-row-status">มีข้อมูลแล้ว {skuLookup.length} รายการ{lastUpload("sku")}</td>
-                <td className="upload-row-clear">—</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      {sourceCategories.map((cat) => {
+        const podsHere = allPods.filter((p) => categoryOf(p.key) === cat.id && p.node);
+        return (
+          <div
+            key={cat.id}
+            className="source-category"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => { e.preventDefault(); if (dragPodKey) movePodTo(dragPodKey, cat.id); }}
+          >
+            <div className="mapping-section-title">
+              {cat.label}
+              {sourceCategories.length > 1 && (
+                <button className="source-cat-remove no-print" onClick={() => removeCategory(cat.id)} title="ลบ Category นี้ (POD จะย้ายไปที่ Category แรก)"><X size={13} /></button>
+              )}
+            </div>
+            {podsHere.length === 0 && <div className="source-cat-empty no-print">ลาก POD มาวางที่นี่</div>}
+            {podsHere.map((p) => (
+              <Pod key={p.key} podKey={p.key} title={p.title} icon={p.icon}>{p.node}</Pod>
+            ))}
+          </div>
+        );
+      })}
 
-      <DocUploadAdmin docType="announcement" label="Announcement" icon={<Zap size={13} />} searchQuery={uploadSearch} />
-      <DocUploadAdmin docType="training" label="Training Tool" icon={<Trophy size={13} />} searchQuery={uploadSearch} />
-      <TaskManagerAdmin tasks={tasks} saveTask={saveTask} deleteTask={deleteTask} stores={stores} />
-      <AuthorityAdmin authority={authority} saveAuthority={saveAuthority} />
+      <button className="btn btn-outline no-print" style={{ margin: "1rem 0 2rem" }} onClick={addCategory}><Plus size={14} /> เพิ่ม Category</button>
     </div>
   );
 }
