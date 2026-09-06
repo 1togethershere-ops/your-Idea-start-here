@@ -520,6 +520,23 @@ function loadScriptOnce(src) {
   return _loadedScripts[src];
 }
 
+let _thaiFontBase64Promise = null;
+function loadThaiFontBase64() {
+  // jsPDF ships no Thai glyphs at all, so any Thai text (e.g. "กล่องที่", "สาขา")
+  // renders as garbage without an embedded Thai font. Fetched once and cached —
+  // subsequent PDF generations reuse the same in-memory copy.
+  if (_thaiFontBase64Promise) return _thaiFontBase64Promise;
+  _thaiFontBase64Promise = fetch("https://raw.githubusercontent.com/google/fonts/main/ofl/sarabun/Sarabun-Regular.ttf")
+    .then((res) => { if (!res.ok) throw new Error("font fetch failed"); return res.arrayBuffer(); })
+    .then((buf) => {
+      let binary = "";
+      const bytes = new Uint8Array(buf);
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary);
+    });
+  return _thaiFontBase64Promise;
+}
+
 async function saveChunked(prefix, rows) {
   const chunks = [];
   for (let i = 0; i < rows.length; i += RW_CHUNK_SIZE) chunks.push(rows.slice(i, i + RW_CHUNK_SIZE));
@@ -3490,13 +3507,34 @@ function CartonLabelPanel({ ctx }) {
       const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "landscape" }); // 297 x 210mm
       const PAGE_W = 297, PAGE_H = 210;
 
-      // Pre-load every article's product photo once (best-effort — falls back to a
-      // blank placeholder box if the image can't be fetched, e.g. CORS or 404).
+      // Embed a Thai-capable font — jsPDF's built-in fonts have no Thai glyphs at all,
+      // which is why Thai text used to render as garbled symbols.
+      try {
+        const thaiFont = await loadThaiFontBase64();
+        doc.addFileToVFS("Sarabun-Regular.ttf", thaiFont);
+        doc.addFont("Sarabun-Regular.ttf", "Sarabun", "normal");
+        doc.addFont("Sarabun-Regular.ttf", "Sarabun", "bold"); // Sarabun-Regular has no separate bold file — reuse it
+        doc.setFont("Sarabun", "normal");
+      } catch (e) {
+        ctx.showToast("error", "โหลดฟอนต์ไทยไม่สำเร็จ — ตัวอักษรไทยในหัวหน้าอาจแสดงผลผิดเพี้ยน");
+      }
+
+      // Pre-load every article's product photo once — best-effort — falls back to a
+      // blank placeholder box if the image can't be fetched (e.g. CORS or 404). Also
+      // measure each photo's natural size so it can be drawn without distortion later.
       const allArticles = boxes.flatMap((b) => b.articles);
       const imgCache = new Map();
       for (const a of allArticles) {
         if (!a.code || imgCache.has(a.code)) continue;
-        imgCache.set(a.code, await srImageToDataURL(skuImageUrl(a.code)));
+        const dataUrl = await srImageToDataURL(skuImageUrl(a.code));
+        if (!dataUrl) { imgCache.set(a.code, null); continue; }
+        const dims = await new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+          img.onerror = () => resolve(null);
+          img.src = dataUrl;
+        });
+        imgCache.set(a.code, dims ? { dataUrl, ...dims } : null);
       }
 
       const fitFontSize = (text, maxWidth, baseSize) => {
@@ -3506,71 +3544,74 @@ function CartonLabelPanel({ ctx }) {
         return size;
       };
 
+      // No borders, no internal padding between the photo/brand/category/code rows —
+      // each card is one continuous flush block.
       const drawCard = (x, y, w, h, a) => {
         const photoH = h * 0.55;
-        doc.setDrawColor(180); doc.setFillColor(240, 240, 238);
-        doc.rect(x, y, w, photoH, "FD");
-        const dataUrl = a.code ? imgCache.get(a.code) : null;
-        if (dataUrl) {
+        doc.setFillColor(240, 240, 236);
+        doc.rect(x, y, w, photoH, "F");
+        const img = a.code ? imgCache.get(a.code) : null;
+        if (img) {
           try {
-            const pad = 4;
-            doc.addImage(dataUrl, "JPEG", x + pad, y + pad, w - pad * 2, photoH - pad * 2, undefined, "FAST");
+            // Contain-fit: preserve the photo's real aspect ratio inside the box
+            // (within ~2% of native proportions) instead of stretching it to fill.
+            const pad = w * 0.06;
+            const boxW = w - pad * 2, boxH = photoH - pad * 2;
+            const scale = Math.min(boxW / img.w, boxH / img.h);
+            const drawW = img.w * scale, drawH = img.h * scale;
+            const drawX = x + (w - drawW) / 2, drawY = y + (photoH - drawH) / 2;
+            doc.addImage(img.dataUrl, "JPEG", drawX, drawY, drawW, drawH, undefined, "FAST");
           } catch (e) {}
         }
         let ry = y + photoH;
         const rowH = (h - photoH) / 3;
         const textMaxW = w - 8;
-        doc.setDrawColor(0);
         // Brand row
-        doc.rect(x, ry, w, rowH);
-        doc.setFont(undefined, "bold"); doc.setTextColor(0);
+        doc.setFont("Sarabun", "normal"); doc.setTextColor(0);
         const brandTxt = String(a.brand || "-").toUpperCase();
         fitFontSize(brandTxt, textMaxW, 28);
         doc.text(brandTxt, x + w / 2, ry + rowH / 2 + 3, { align: "center" });
         ry += rowH;
         // Category (Level 4) row
-        doc.rect(x, ry, w, rowH);
         const catTxt = String(a.level4 || "-").toUpperCase();
         fitFontSize(catTxt, textMaxW, 28);
         doc.text(catTxt, x + w / 2, ry + rowH / 2 + 3, { align: "center" });
         ry += rowH;
-        // Code row — yellow highlight
+        // Code row — yellow highlight, no border
         doc.setFillColor(255, 216, 0);
         doc.rect(x, ry, w, rowH, "F");
-        doc.rect(x, ry, w, rowH);
         const codeTxt = String(a.code || "-").toUpperCase();
         fitFontSize(codeTxt, textMaxW, 28);
         doc.text(codeTxt, x + w / 2, ry + rowH / 2 + 3, { align: "center" });
-        doc.setFont(undefined, "normal");
       };
 
       const MARGIN = 12;
       const layoutFor = (count) => {
         const areaW = PAGE_W - MARGIN * 2, areaH = PAGE_H - MARGIN * 2 - 14; // reserve header space
-        const gap = 8;
+        const gap = 0; // cards sit flush against each other, no gap
         if (count === 1) {
           const w = 110, h = areaH;
           return [{ x: (PAGE_W - w) / 2, y: MARGIN + 14, w, h }];
         }
         if (count === 2) {
-          const w = (areaW - gap) / 2, h = areaH;
-          return [0, 1].map((i) => ({ x: MARGIN + i * (w + gap), y: MARGIN + 14, w, h }));
+          const w = areaW / 2, h = areaH;
+          return [0, 1].map((i) => ({ x: MARGIN + i * w, y: MARGIN + 14, w, h }));
         }
         if (count === 3) {
-          const w = (areaW - gap) / 2, h = (areaH - gap) / 2;
+          const w = areaW / 2, h = areaH / 2;
           return [
             { x: MARGIN, y: MARGIN + 14, w, h },
-            { x: MARGIN + w + gap, y: MARGIN + 14, w, h },
-            { x: MARGIN + (areaW - w) / 2, y: MARGIN + 14 + h + gap, w, h },
+            { x: MARGIN + w, y: MARGIN + 14, w, h },
+            { x: MARGIN + (areaW - w) / 2, y: MARGIN + 14 + h, w, h },
           ];
         }
         // 4
-        const w = (areaW - gap) / 2, h = (areaH - gap) / 2;
+        const w = areaW / 2, h = areaH / 2;
         return [
           { x: MARGIN, y: MARGIN + 14, w, h },
-          { x: MARGIN + w + gap, y: MARGIN + 14, w, h },
-          { x: MARGIN, y: MARGIN + 14 + h + gap, w, h },
-          { x: MARGIN + w + gap, y: MARGIN + 14 + h + gap, w, h },
+          { x: MARGIN + w, y: MARGIN + 14, w, h },
+          { x: MARGIN, y: MARGIN + 14 + h, w, h },
+          { x: MARGIN + w, y: MARGIN + 14 + h, w, h },
         ];
       };
 
@@ -3581,7 +3622,8 @@ function CartonLabelPanel({ ctx }) {
           const chunk = box.articles.slice(i, i + 4);
           if (!firstPage) doc.addPage();
           firstPage = false;
-          doc.setFontSize(13); doc.setFont(undefined, "normal"); doc.setTextColor(90);
+          doc.setFont("Sarabun", "normal");
+          doc.setFontSize(13); doc.setTextColor(90);
           doc.text(`Initial ID: ${box.initialId || "-"}  ·  กล่องที่ ${box.boxNumber}  ·  สาขา: ${box.store === "ALL" ? "-" : box.store}`, MARGIN, MARGIN + 4);
           doc.setTextColor(0);
           const slots = layoutFor(chunk.length);
