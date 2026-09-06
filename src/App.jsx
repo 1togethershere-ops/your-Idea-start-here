@@ -2580,7 +2580,7 @@ function TaskAlertBanner({ ctx }) {
     <div className="task-alert no-print">
       <AlertCircle size={18} />
       <div className="task-alert-text">
-        <b>มีงานค้าง {pending.length} รายการ</b>{overdueCount > 0 && <span> (เลยกำหนดแล้ว {overdueCount} รายการ)</span>} สำหรับ{ctx.store === "ALL" ? "ภาพรวมทุกสาขา" : ctx.store} — เปิด Widget "Tasks" เพื่อดูรายละเอียดและติ๊กเมื่อทำเสร็จ
+        <b>มีงานค้าง {pending.length} รายการ</b>{overdueCount > 0 && <span> (เลยกำหนดแล้ว {overdueCount} รายการ)</span>} สำหรับ{ctx.store === "ALL" ? "ภาพรวมทุกสาขา" : ctx.store} — เปิด SPACE POD "Tasks" เพื่อดูรายละเอียดและติ๊กเมื่อทำเสร็จ
       </div>
     </div>
   );
@@ -3487,8 +3487,15 @@ function CartonLabelPanel({ ctx }) {
         imgCache.set(a.code, await srImageToDataURL(skuImageUrl(a.code)));
       }
 
+      const fitFontSize = (text, maxWidth, baseSize) => {
+        let size = baseSize;
+        doc.setFontSize(size);
+        while (size > 8 && doc.getTextWidth(text) > maxWidth) { size -= 1; doc.setFontSize(size); }
+        return size;
+      };
+
       const drawCard = (x, y, w, h, a) => {
-        const photoH = h * 0.62;
+        const photoH = h * 0.55;
         doc.setDrawColor(180); doc.setFillColor(240, 240, 238);
         doc.rect(x, y, w, photoH, "FD");
         const dataUrl = a.code ? imgCache.get(a.code) : null;
@@ -3500,21 +3507,28 @@ function CartonLabelPanel({ ctx }) {
         }
         let ry = y + photoH;
         const rowH = (h - photoH) / 3;
+        const textMaxW = w - 8;
         doc.setDrawColor(0);
         // Brand row
         doc.rect(x, ry, w, rowH);
-        doc.setFont(undefined, "bold"); doc.setFontSize(12); doc.setTextColor(0);
-        doc.text(String(a.brand || "-").toUpperCase(), x + w / 2, ry + rowH / 2 + 1.5, { align: "center" });
+        doc.setFont(undefined, "bold"); doc.setTextColor(0);
+        const brandTxt = String(a.brand || "-").toUpperCase();
+        fitFontSize(brandTxt, textMaxW, 28);
+        doc.text(brandTxt, x + w / 2, ry + rowH / 2 + 3, { align: "center" });
         ry += rowH;
         // Category (Level 4) row
         doc.rect(x, ry, w, rowH);
-        doc.text(String(a.level4 || "-").toUpperCase(), x + w / 2, ry + rowH / 2 + 1.5, { align: "center" });
+        const catTxt = String(a.level4 || "-").toUpperCase();
+        fitFontSize(catTxt, textMaxW, 28);
+        doc.text(catTxt, x + w / 2, ry + rowH / 2 + 3, { align: "center" });
         ry += rowH;
         // Code row — yellow highlight
         doc.setFillColor(255, 216, 0);
         doc.rect(x, ry, w, rowH, "F");
         doc.rect(x, ry, w, rowH);
-        doc.text(String(a.code || "-").toUpperCase(), x + w / 2, ry + rowH / 2 + 1.5, { align: "center" });
+        const codeTxt = String(a.code || "-").toUpperCase();
+        fitFontSize(codeTxt, textMaxW, 28);
+        doc.text(codeTxt, x + w / 2, ry + rowH / 2 + 3, { align: "center" });
         doc.setFont(undefined, "normal");
       };
 
@@ -3555,7 +3569,7 @@ function CartonLabelPanel({ ctx }) {
           const chunk = box.articles.slice(i, i + 4);
           if (!firstPage) doc.addPage();
           firstPage = false;
-          doc.setFontSize(11); doc.setFont(undefined, "normal"); doc.setTextColor(90);
+          doc.setFontSize(13); doc.setFont(undefined, "normal"); doc.setTextColor(90);
           doc.text(`Initial ID: ${box.initialId || "-"}  ·  กล่องที่ ${box.boxNumber}  ·  สาขา: ${box.store === "ALL" ? "-" : box.store}`, MARGIN, MARGIN + 4);
           doc.setTextColor(0);
           const slots = layoutFor(chunk.length);
@@ -3708,7 +3722,26 @@ function StoreInventoryPanel({ ctx }) {
   );
 }
 
+function SubmitReportWidget({ ctx }) {
+  return (
+    <div className="submit-widget-body">
+      {ctx.submission && (
+        <div className="submitted-note">
+          ส่งล่าสุด {new Date(ctx.submission.submittedAt).toLocaleString("th-TH")}
+        </div>
+      )}
+      <button className="btn btn-submit btn-block" onClick={ctx.submitReport} disabled={ctx.submitting}>
+        <CheckCircle2 size={15} /> {ctx.submitting ? "กำลังส่ง..." : ctx.submission ? "ส่งอีกครั้ง & PDF" : "ส่งรายงาน & PDF"}
+      </button>
+      <button className="btn btn-outline btn-block" style={{ marginTop: ".5rem" }} onClick={ctx.handlePrint}>
+        <Download size={14} /> ดาวน์โหลด PDF เฉยๆ
+      </button>
+    </div>
+  );
+}
+
 const WIDGET_DEFS = {
+  submitreport: { title: "ส่งรายงาน", icon: <CheckCircle2 size={15} />, category: "ภาพรวม", Comp: SubmitReportWidget },
   reflection: { title: "สรุปวันนี้ (สำเร็จ/ไม่สำเร็จ)", icon: <Smile size={15} />, category: "ภาพรวม", Comp: ({ ctx }) => <ReflectionBar ctx={ctx} /> },
   achievements: { title: "Achievement Badges", icon: <Trophy size={15} />, category: "ภาพรวม", Comp: ({ ctx }) => <AchievementBadges ctx={ctx} /> },
   kpi: { title: "KPI หลัก (Target/MTD/%Hit/ATV/IPT/CR)", icon: <TargetIcon size={15} />, category: "ภาพรวม", Comp: ({ ctx }) => <FixedKpiBlock ctx={ctx} /> },
@@ -4165,9 +4198,9 @@ const GLOBAL_STYLES = `
         .ticker-hot{ color:var(--yellow); animation:flame-flicker 1.1s ease-in-out infinite; }
         @keyframes flame-flicker{ 0%,100%{ opacity:1; transform:scale(1);} 50%{ opacity:.7; transform:scale(1.12);} }
 
-        .layout{ display:flex; align-items:flex-start; max-width:1500px; margin:0 auto; }
+        .layout{ display:block; max-width:1500px; margin:0 auto; }
         .sidebar{ width:290px; flex-shrink:0; padding:1.4rem 1.1rem; position:sticky; top:0; }
-        .main{ flex:1; min-width:0; padding:1.4rem 1.6rem 3rem; }
+        .main{ min-width:0; padding:1rem 1.4rem 3rem; }
 
         .brand{ display:flex; align-items:center; gap:.6rem; margin-bottom:1.2rem; }
         .brand-mark{ width:36px; height:36px; border-radius:8px; background:var(--ink); display:flex; align-items:center; justify-content:center; color:var(--yellow); font-weight:700; font-family:'Space Grotesk',sans-serif; position:relative; overflow:hidden; }
@@ -4229,6 +4262,19 @@ const GLOBAL_STYLES = `
         @keyframes badge-pop{ 0%{ transform:scale(.85); } 55%{ transform:scale(1.08); } 100%{ transform:scale(1); } }
 
         .widgets-toolbar{ display:flex; justify-content:flex-end; gap:.5rem; flex-wrap:wrap; margin-bottom:.6rem; position:relative; }
+        .space-bar{ display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; max-width:1500px; margin:0 auto; padding:.8rem 1.4rem; background:#fff; border-bottom:1px solid var(--line); box-shadow:0 1px 4px rgba(0,0,0,.04); }
+        .space-welcome{ font-family:'Space Grotesk',sans-serif; font-weight:800; font-size:1rem; color:var(--ink); white-space:nowrap; margin-right:.15rem; }
+        .space-info{ display:flex; align-items:center; gap:.35rem; min-height:38px; padding:.45rem .7rem; background:#FCFCFA; border:1px solid var(--line); border-radius:10px; font-size:.78rem; white-space:nowrap; }
+        .space-info-label{ color:var(--mute); font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+        .space-info-value{ font-weight:800; color:var(--text); }
+        .space-date{ display:flex; align-items:center; gap:.35rem; }
+        .space-date input{ width:132px; min-height:30px; padding:.35rem .5rem; border:1px solid var(--line); border-radius:7px; background:#fff; color:var(--text); font:inherit; font-size:.76rem; }
+        .space-date input:disabled{ opacity:.45; cursor:not-allowed; background:#F2F2EE; }
+        .space-btn{ display:inline-flex; align-items:center; justify-content:center; gap:.4rem; min-height:38px; padding:.45rem .85rem; border:1px solid var(--ink); border-radius:10px; background:var(--ink); color:var(--yellow); font-weight:800; font-size:.78rem; cursor:pointer; white-space:nowrap; }
+        .space-btn:hover{ transform:translateY(-1px); }
+        .space-btn-soon{ background:#F4F4F0; color:#9A9A91; border-color:var(--line); cursor:not-allowed; }
+        .space-spacer{ flex:1; }
+        @media (max-width: 900px){ .space-bar{ align-items:stretch; } .space-welcome{ width:100%; } .space-spacer{ display:none; } .space-date{ flex:1; } .space-date input{ width:100%; } }
 
         .launcher-overlay{ position:fixed; inset:0; background:rgba(10,10,10,.55); z-index:200; display:flex; align-items:center; justify-content:center; padding:1.2rem; backdrop-filter:blur(2px); }
         .launcher-modal{ background:#fff; border-radius:20px; width:100%; max-width:820px; max-height:86vh; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,.35); animation:launcher-in .18s ease; }
@@ -4387,6 +4433,7 @@ const GLOBAL_STYLES = `
         .btn-submit:hover{ background:var(--yellow-dark); }
         .submit-panel .btn-outline{ background:#1A1A1A; color:#EDEDE8; border-color:#2C2C2C; }
         .submitted-note{ font-size:.72rem; color:#C9C9C0; margin-bottom:.5rem; }
+        .submit-widget-body .submitted-note{ color:var(--mute); }
         .submitted-badge{ display:inline-flex; align-items:center; margin-left:.6rem; font-size:.68rem; font-weight:700; background:var(--yellow); color:var(--ink); padding:.15rem .55rem; border-radius:999px; vertical-align:middle; }
 
         .mapping-page{ max-width:1100px; margin:0 auto; padding:1.6rem; }
@@ -4395,15 +4442,18 @@ const GLOBAL_STYLES = `
         .upload-search-row{ display:flex; align-items:center; gap:.6rem; background:#fff; border:1px solid var(--line); border-radius:12px; padding:.7rem 1rem; margin:1.4rem 0 1rem; }
         .upload-search-row input{ flex:1; border:none; outline:none; font-size:.88rem; background:transparent; }
         .upload-table-wrap{ overflow-x:auto; border:1px solid var(--line); border-radius:14px; background:#fff; }
-        .upload-table{ width:100%; border-collapse:collapse; font-size:.82rem; }
-        .upload-table thead th{ text-align:left; padding:.7rem .9rem; background:#FAFAF8; border-bottom:1px solid var(--line); font-size:.7rem; text-transform:uppercase; letter-spacing:.03em; color:var(--mute); white-space:nowrap; }
-        .upload-table tbody td{ padding:.8rem .9rem; border-bottom:1px solid var(--line); vertical-align:top; }
+        .upload-table{ width:100%; border-collapse:collapse; font-size:.92rem; }
+        .upload-table thead th{ text-align:left; padding:.8rem .9rem; background:var(--ink); border-bottom:1px solid var(--line); font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; color:var(--yellow); white-space:nowrap; }
+        .upload-table tbody tr:nth-child(odd){ background:#FFFDF2; }
+        .upload-table tbody tr:nth-child(even){ background:#fff; }
+        .upload-table tbody td{ padding:.9rem .9rem; border-bottom:1px solid var(--line); vertical-align:top; }
         .upload-table tbody tr:last-child td{ border-bottom:none; }
-        .upload-row-name{ font-weight:700; white-space:nowrap; display:flex; align-items:center; gap:.4rem; }
-        .upload-row-desc{ color:var(--mute); font-size:.76rem; max-width:320px; line-height:1.5; }
+        .upload-table tbody td:first-child{ border-left:4px solid var(--yellow); }
+        .upload-row-name{ font-weight:800; font-size:.98rem; white-space:nowrap; display:flex; align-items:center; gap:.4rem; }
+        .upload-row-desc{ color:var(--mute); font-size:.8rem; max-width:320px; line-height:1.55; }
         .upload-row-action{ display:flex; flex-direction:column; gap:.4rem; align-items:flex-start; }
         .upload-row-action .btn{ white-space:nowrap; }
-        .upload-row-status{ font-size:.78rem; color:var(--mute); min-width:160px; }
+        .upload-row-status{ font-size:.84rem; color:var(--mute); min-width:160px; }
         .upload-row-clear{ white-space:nowrap; }
         .mapping-card{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:1.1rem; }
         .mapping-cols{ font-size:.72rem; color:var(--mute); line-height:1.6; margin-bottom:.8rem; background:#FCFCFA; border:1px solid var(--line); border-radius:9px; padding:.6rem .7rem; }
@@ -4876,13 +4926,11 @@ function Dashboard({ session, onLogout }) {
     try { await window.storage.set(`customcfg:${uid}`, JSON.stringify(config), false); } catch (e) {}
     setWidgetOrder((prev) => { const next = [...prev, uid]; persistLayout(next, hidden, scales); return next; });
     setLauncherOpen(false);
-    showToast("success", `สร้าง Widget "${config.name}" แล้ว`);
+    showToast("success", `สร้าง SPACE POD "${config.name}" แล้ว`);
   };
 
   const visibleWidgets = widgetOrder.filter((id) => !hidden.includes(id) && isAllowedWidget(authority, session?.position, widgetType(id)));
   const hiddenWidgets = widgetOrder.filter((id) => hidden.includes(id));
-
-  const ctx = { store, from, to, dates, lyDates, data, lyData, tenderCurrent, tenderLastYear, targets, nationality, vatRefundRows, tasks, saveTask, deleteTask, stores, curTotals, lyTotals, hasLY, footfall, setFootfall, showToast, demoMode, session, addInstance, authority, rewardLeadership, rewardTransactions, rewardPeriod, uploadTimestamps, skuLookup };
 
   const submitReport = useCallback(async () => {
     setSubmitting(true);
@@ -4916,6 +4964,8 @@ function Dashboard({ session, onLogout }) {
 
   const handlePrint = useCallback(() => window.print(), []);
 
+  const ctx = { store, from, to, dates, lyDates, data, lyData, tenderCurrent, tenderLastYear, targets, nationality, vatRefundRows, tasks, saveTask, deleteTask, stores, curTotals, lyTotals, hasLY, footfall, setFootfall, showToast, demoMode, session, addInstance, authority, rewardLeadership, rewardTransactions, rewardPeriod, uploadTimestamps, skuLookup, submission, submitting, submitReport, handlePrint };
+
   return (
     <div className="app-root">
 
@@ -4939,6 +4989,33 @@ function Dashboard({ session, onLogout }) {
         </div>
       </div>
 
+      <div className="space-bar no-print">
+        <div className="space-welcome">Welcome to Your Space {session?.nickname || ""}</div>
+        <div className="space-info">
+          <span className="space-info-label">Store</span>
+          {canSwitchStore ? (
+            <select value={store} onChange={(e) => setStore(e.target.value)} style={{ border: "none", background: "transparent", fontWeight: 800, color: "var(--text)", outline: "none", fontSize: ".78rem" }}>
+              <option value="ALL">ทุกสาขา</option>
+              {stores.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          ) : (
+            <span className="space-info-value">{store || "(ยังไม่ระบุสาขา)"}</span>
+          )}
+        </div>
+        <div className="space-date">
+          <span className="space-info-label">จากวันที่</span>
+          <input type="date" value={from} max={to || undefined} disabled={!to} onChange={(e) => setFrom(e.target.value)} />
+        </div>
+        <div className="space-date">
+          <span className="space-info-label">ถึงวันที่</span>
+          <input type="date" value={to} onChange={(e) => { const next = e.target.value; setTo(next); if (from && next && from > next) setFrom(next); }} />
+        </div>
+        <div className="space-spacer" />
+        <button className="space-btn" onClick={() => setLauncherOpen(true)}><Plus size={14} /> +SPACE POD</button>
+        <button className="space-btn space-btn-soon" disabled title="Coming Soon"><Zap size={14} /> +Meteorology <span style={{ fontSize: ".62rem" }}>(Soon)</span></button>
+        <button className="profile-logout" onClick={onLogout} title="ออกจากระบบ" aria-label="ออกจากระบบ"><X size={14} /></button>
+      </div>
+
       {page === "move" ? (
         <ComingSoonPage />
       ) : page === "source" ? (
@@ -4955,70 +5032,8 @@ function Dashboard({ session, onLogout }) {
         />
       ) : (
       <div className="layout">
-        <aside className="sidebar no-print">
-          <div className="brand">
-            <div className="brand-mark">SA</div>
-            <div><div className="brand-title">Create your<br />space</div><div className="brand-sub">ประกอบแดชบอร์ดของคุณเอง</div></div>
-          </div>
-
-          <div className="profile-chip">
-            <div className="profile-avatar">{(session?.nickname || "?").slice(0, 1).toUpperCase()}</div>
-            <div className="profile-info">
-              <div className="profile-name">{session?.nickname}</div>
-              <div className="profile-meta">{session?.store === "ALL" ? "ทุกสาขา" : session?.store} · {session?.position}</div>
-            </div>
-            <button className="profile-logout" onClick={onLogout} title="ออกจากระบบ"><X size={13} /></button>
-          </div>
-
-          <div className="panel submit-panel">
-            <div className="panel-title"><CheckCircle2 size={13} /> ส่งรายงาน</div>
-            {submission && (
-              <div className="submitted-note">
-                ส่งล่าสุด {new Date(submission.submittedAt).toLocaleString("th-TH")}
-              </div>
-            )}
-            <button className="btn btn-submit btn-block" onClick={submitReport} disabled={submitting}>
-              <CheckCircle2 size={15} /> {submitting ? "กำลังส่ง..." : submission ? "ส่งอีกครั้ง & PDF" : "ส่งรายงาน & PDF"}
-            </button>
-            <button className="btn btn-outline btn-block" style={{ marginTop: ".5rem" }} onClick={handlePrint}>
-              <Download size={14} /> ดาวน์โหลด PDF เฉยๆ
-            </button>
-          </div>
-
-          <div className="panel">
-            <div className="panel-title"><Calendar size={13} /> ตัวกรอง</div>
-            <label className="field-label">สาขา{!canSwitchStore && <Lock size={11} style={{ marginLeft: ".3rem", verticalAlign: "-1px" }} />}</label>
-            {canSwitchStore ? (
-              <select value={store} onChange={(e) => setStore(e.target.value)}>
-                <option value="ALL">ทุกสาขา ({stores.length})</option>
-                {stores.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-            ) : (
-              <div className="store-locked-badge" title="เฉพาะตำแหน่ง AM เท่านั้นที่สลับดูสาขาอื่นได้">{store || "(ยังไม่ระบุสาขา)"}</div>
-            )}
-            <label className="field-label">จากวันที่</label>
-            <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
-            <label className="field-label">ถึงวันที่</label>
-            <input type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} />
-          </div>
-        </aside>
-
         <main className="main">
-          <div className="page-head">
-            <div>
-              <div className="page-title">
-                {store === "ALL" ? "ภาพรวมทุกสาขา" : store}
-                {submission && <span className="submitted-badge">✓ ส่งรายงานแล้ว {submission.submittedAt.slice(0, 10)}</span>}
-              </div>
-              <div className="page-meta">{from} — {to}{demoMode && <span> · เทียบกับข้อมูลตัวอย่าง (ไม่ใช่ตัวเลขจริง)</span>}{!demoMode && !hasLY && <span> · ยังไม่มีข้อมูลปีที่แล้วสำหรับช่วงนี้</span>}</div>
-            </div>
-          </div>
-
           <TaskAlertBanner ctx={ctx} />
-
-          <div className="widgets-toolbar no-print">
-            <button className="btn btn-primary" onClick={() => setLauncherOpen(true)}><Plus size={14} /> เพิ่ม Widget</button>
-          </div>
 
           {launcherOpen && (
             <WidgetLauncher
@@ -5039,9 +5054,9 @@ function Dashboard({ session, onLogout }) {
             {visibleWidgets.length === 0 && (
               <div className="widget-span2 empty-dashboard">
                 <Sparkles size={22} />
-                <div className="empty-dashboard-title">ยังไม่มี Widget ในหน้านี้</div>
-                <div className="empty-dashboard-sub">กดปุ่ม "+ เพิ่ม Widget" ด้านบนเพื่อเลือกสิ่งที่อยากดูในรายงานวันนี้</div>
-                <button className="btn btn-primary no-print" onClick={() => setLauncherOpen(true)}><Plus size={14} /> เพิ่ม Widget</button>
+                <div className="empty-dashboard-title">ยังไม่มี SPACE POD ในหน้านี้</div>
+                <div className="empty-dashboard-sub">กดปุ่ม "+SPACE POD" ด้านบนเพื่อเลือกสิ่งที่อยากดูในรายงานวันนี้</div>
+                <button className="btn btn-primary no-print" onClick={() => setLauncherOpen(true)}><Plus size={14} /> +SPACE POD</button>
               </div>
             )}
             {visibleWidgets.map((id) => {
