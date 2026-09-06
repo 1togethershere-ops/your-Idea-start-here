@@ -97,6 +97,19 @@ function normalizeDateValue(v) {
   }
   return null;
 }
+// Fiscal/retail week calendar — Week 1 starts 01/02/2026 (not a calendar-year ISO
+// week). Computed from the confirmed anchor (Week 13 = 26/04/2026–02/05/2026).
+const WEEK_RANGES = (() => {
+  const week13Start = new Date(Date.UTC(2026, 3, 26)); // months are 0-indexed: 3 = April
+  const out = [];
+  for (let w = 1; w <= 42; w++) {
+    const start = new Date(week13Start.getTime() + (w - 13) * 7 * 86400000);
+    const end = new Date(start.getTime() + 6 * 86400000);
+    out.push({ week: w, from: fmtDateUTC(start), to: fmtDateUTC(end) });
+  }
+  return out;
+})();
+
 function dateRangeArray(from, to) {
   const out = [];
   let cur = new Date(from + "T00:00:00Z");
@@ -4334,6 +4347,7 @@ const GLOBAL_STYLES = `
         .space-info-label{ color:var(--mute); font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
         .space-info-value{ font-weight:800; color:var(--text); }
         .space-date{ display:flex; align-items:center; gap:.35rem; flex-shrink:0; }
+        .space-date-mode{ display:flex; gap:.3rem; flex-shrink:0; }
         .space-date input{ width:132px; min-height:30px; padding:.35rem .5rem; border:1px solid var(--line); border-radius:7px; background:#fff; color:var(--text); font:inherit; font-size:.76rem; }
         .space-date input:disabled{ opacity:.45; cursor:not-allowed; background:#F2F2EE; }
         .space-btn{ display:inline-flex; align-items:center; justify-content:center; gap:.4rem; min-height:38px; padding:.45rem .85rem; border:1px solid var(--ink); border-radius:10px; background:var(--ink); color:var(--yellow); font-weight:800; font-size:.78rem; cursor:pointer; white-space:nowrap; flex-shrink:0; }
@@ -4675,6 +4689,13 @@ function Dashboard({ session, onLogout }) {
   }, [canSwitchStore, session]);
   const [from, setFrom] = useState("2026-08-01");
   const [to, setTo] = useState("2026-08-10");
+  const [dateMode, setDateMode] = useState("custom"); // "week" | "custom"
+  const [selectedWeek, setSelectedWeek] = useState("");
+  const applyWeek = (weekNum) => {
+    setSelectedWeek(weekNum);
+    const w = WEEK_RANGES.find((r) => String(r.week) === String(weekNum));
+    if (w) { setFrom(w.from); setTo(w.to); }
+  };
   const [footfall, setFootfallState] = useState(0);
 
   const [toast, setToast] = useState(null);
@@ -5098,14 +5119,32 @@ function Dashboard({ session, onLogout }) {
             <span className="space-info-value">{store || "(ยังไม่ระบุสาขา)"}</span>
           )}
         </div>
-        <div className="space-date">
-          <span className="space-info-label">จากวันที่</span>
-          <input type="date" value={from} max={to || undefined} disabled={!to} onChange={(e) => setFrom(e.target.value)} />
+        <div className="space-date-mode">
+          <button className={`chip${dateMode === "week" ? " chip-active" : ""}`} onClick={() => setDateMode("week")}>WEEK</button>
+          <button className={`chip${dateMode === "custom" ? " chip-active" : ""}`} onClick={() => setDateMode("custom")}>CUSTOM</button>
         </div>
-        <div className="space-date">
-          <span className="space-info-label">ถึงวันที่</span>
-          <input type="date" value={to} onChange={(e) => { const next = e.target.value; setTo(next); if (from && next && from > next) setFrom(next); }} />
-        </div>
+        {dateMode === "week" ? (
+          <div className="space-date">
+            <span className="space-info-label">Week</span>
+            <select value={selectedWeek} onChange={(e) => applyWeek(e.target.value)} style={{ border: "1px solid var(--line)", borderRadius: "7px", padding: ".35rem .5rem", fontSize: ".76rem", background: "#fff" }}>
+              <option value="" disabled>เลือก Week</option>
+              {WEEK_RANGES.map((r) => (
+                <option key={r.week} value={r.week}>W{r.week} · {rwIsoToDMY(r.from)}–{rwIsoToDMY(r.to)}</option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          <>
+            <div className="space-date">
+              <span className="space-info-label">จากวันที่</span>
+              <input type="date" value={from} max={to || undefined} disabled={!to} onChange={(e) => setFrom(e.target.value)} />
+            </div>
+            <div className="space-date">
+              <span className="space-info-label">ถึงวันที่</span>
+              <input type="date" value={to} onChange={(e) => { const next = e.target.value; setTo(next); if (from && next && from > next) setFrom(next); }} />
+            </div>
+          </>
+        )}
         <div className="space-spacer" />
         <button className="space-btn" onClick={() => setLauncherOpen(true)}><Plus size={14} /> +SPACE POD</button>
         <button className="space-btn space-btn-soon" disabled title="Coming Soon"><Zap size={14} /> +Meteorology <span style={{ fontSize: ".62rem" }}>(Soon)</span></button>
